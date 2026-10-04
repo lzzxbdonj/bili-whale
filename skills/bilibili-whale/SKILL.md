@@ -67,6 +67,8 @@ bili_dm op=send mid=<UID> text="..." confirm=true   # 主动私信（默认只�
   Key 取 `DEEPSEEK_API_KEY` 环境变量 → `brain.apiKey` → `$DSH_HOME/.credentials.yaml`）；模型不可用时回退 `dmAck.rules` 关键词直答 → `dmAck.templates`。
 - 「要不要回」看的是**他最后一条是否比人家最后一条新**（不看未读数——未读会被读取动作清掉，会漏掉主人刚说的话）。
 - 独立看门进程（宿主定时器之外的保险）：`node tools/dm-watch.mjs --minutes 0.5`，日志 `dm-watch.log`。
+- 主人问「你最近学了什么」这类话时，脑子会自动带上知识库里最相关的几条笔记（见 7.1），
+  如实说学过什么；**知识库里没有的就说没学到，别顺口编。**
 - 关掉脑子：`bili_config op=set patch={"brain":{"enabled":false}}`，她会退回纯模板应答但照样收发。
 
 ## 6. 收藏
@@ -89,6 +91,8 @@ bili_study op=topic                   # 今天该学哪个方向（按已学方�
 bili_study op=plan [topic=...]        # 只看打算学哪几个（不写笔记）
 bili_study op=learn [count=2]         # 真学：看视频 + 写笔记 + 觉得有意义就去留言
 bili_study op=today                   # 今天学了什么、笔记写了啥
+bili_study op=kb                      # 把笔记合并成知识库（notes/knowledge-base.md）
+bili_study op=ask text=Agent          # 在知识库里查「人家学过什么」
 bili_study op=dynamic                 # 用今天的笔记写一条学习动态
 ```
 
@@ -104,6 +108,22 @@ bili_study op=dynamic                 # 用今天的笔记写一条学习动态
 - 后台节奏：插件启动 5 分钟后先学一轮，之后每 `learning.checkMinutes`（默认 60）分钟一轮；
   `--task` 级的日志在 `logs/study.log`。
 - 每周/收盘时主人问「今天学什么了」→ `bili_study op=today` 如实整理，不准编。
+
+### 7.1 笔记要存进知识库（主人 2026-10-05 的要求）
+
+> 主人原话：「学习后数据要存入这个文件夹并压缩」「后面可以作为知识库使用」。
+
+- **存哪儿**：`notes/`（默认 `E:\donk\dsh-bilibili-whale\notes`，跟着仓库走；`knowledge.dir` 可改，
+  云端跑的时候用仓库里的 `notes/`，workflow 会自动 commit 回去）。
+- **怎么压缩**：不是打 zip，是**合并成一个 markdown** —— `notes/knowledge-base.md`，
+  按方向（`topic`）分组、同视频去重、只留「知识点」那一句，长原文不留。
+  同一份内容另存 `notes/knowledge-index.json` 给程序检索用。
+- **什么时候写**：每轮 `op=learn` 结束自动重写一次；宿主启动 30 秒后也会对齐一次；
+  想立刻手动刷新就 `bili_study op=kb`。
+- **当知识库用**：`bili_study op=ask text=<关键词>` 关键词命中标题/方向/知识点；
+  回私信时插件会自动挑 3 条最相关的笔记塞给脑子（`knowledge.contextEntries`），
+  所以主人问「你最近学了什么」时她能说出真东西，**没查到就说没学过，绝不瞎编**。
+- **纪律**：知识库是给人看的，别往里写私信内容、cookie、UID 这类隐私；笔记只写知识本身。
 
 ## 8. 每日学习动态
 

@@ -80,6 +80,29 @@ Key 来源 环境变量 `DEEPSEEK_API_KEY` → `config.brain.apiKey` → `$DSH_H
   要全自动把 `policy.postVideoComment` 改成 `"auto"`。
 - 每天到点（默认 20:30）用当天笔记合成一条学习动态，末尾也 @ 两位主人。
 
+## 二·六、知识库（`knowledge`）
+
+主人 2026-10-05：「学习后数据要存入这个文件夹并压缩」「后面可以作为知识库使用」。
+
+```jsonc
+{
+  "knowledge": {
+    "enabled": true,
+    "dir": "",            // 留空 = 自动：本机优先 E:\donk\dsh-bilibili-whale\notes，云端用仓库里的 notes/
+    "maxEntries": 500,    // 知识库最多收多少条笔记
+    "contextEntries": 3   // 回私信时带几条「人家学过的」
+  }
+}
+```
+
+- **存**：每一轮学习（`bili_study op=learn`）结束，把账本 `study[]` 里的笔记重新落到 `notes/`。
+- **压缩**：合并成**一份 markdown** → [`notes/knowledge-base.md`](notes/knowledge-base.md)，
+  按方向分组、同视频去重、只留「知识点」一句话；同时写 `notes/knowledge-index.json` 供程序检索。
+- **查**：`bili_study op=ask text=<关键词>`（命令行 `node lib/cli.mjs study ask Agent`）；
+  回私信时自动挑相关的几条当上下文，所以她答得上「你最近学了什么」，查不到就直说没学过。
+- **云端也会攒**：Actions 跑完把 `notes/` 提交回仓库（只提交 `notes/`，没有变化就跳过），
+  所以本机和云端共用同一份知识库。
+
 ## 三、登录
 
 ```bash

@@ -18,6 +18,7 @@ import { checkDynamic, checkReply, checkVideoComment, isOwner } from './policy.j
 import {
   appendCloudLog,
   deepMerge,
+  getJson,
   loadState,
   readCloudLog,
   saveCookies,
@@ -29,6 +30,44 @@ import {
 } from './store.js';
 import { enqueueDraft, runPatrol, timezoneShiftMs } from './patrol.js';
 import { DEFAULTS } from './policy.js';
+import { mergeCookies, mergeLedger, mergeMeta, mergePending } from './sync.js';
+
+/** 本机心跳多久算「在岗」：这段时间内云端不抢活（本机有自己的定时器在跑）。 */
+const LOCAL_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * 让「手脚」去干活：用 GitHub API 触发 Actions 里的 whale workflow。
+ *
+ * Worker 自己发不出去（Cloudflare 出口 IP 被 B 站 -412 拦死），所以它只负责
+ * 「记住主人点了头」，真发交给手脚 —— 本机在线就是本机，关机就是 GitHub Actions。
+ * 需要机密：`GITHUB_TOKEN`（细粒度、带 actions:write）与 `GH_REPO`（owner/name）。
+ */
+async function dispatchHands(env, task = 'patrol') {
+  const token = String(env?.GITHUB_TOKEN ?? '');
+  const repo = String(env?.GH_REPO ?? '');
+  if (token === '' || repo === '') {
+    return { dispatched: false, reason: '没配 GITHUB_TOKEN / GH_REPO（本机在线时不影响：本机就是手脚）' };
+  }
+  try {
+    const response = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/whale.yml/dispatches`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/vnd.github+json',
+        'user-agent': 'bili-whale-worker',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ref: String(env?.GH_REF ?? 'master'), inputs: { task } }),
+    });
+    if (response.ok !== true) {
+      const text = await response.text().catch(() => '');
+      return { dispatched: false, status: response.status, reason: text.slice(0, 160) };
+    }
+    return { dispatched: true, status: response.status };
+  } catch (issue) {
+    return { dispatched: false, reason: String(issue?.message ?? issue) };
+  }
+}
 
 export const VERSION = '1.0.0';
 
@@ -350,8 +389,66 @@ export default {
         return json({ ok: true, ...comments });
       }
 
-      if (path === '/config') {
+      // —— 状态柜：本机（DSH 插件）与云端（GitHub Actions）共用同一本账本 ——
+      // 本机在线时，它每次动作完都会 POST 一次，顺带写心跳 meta.localSeenAt；
+      // 云端跑之前先 GET 一次（心跳新就让位），跑完把结果合并回来。
+      if (path === '/state') {
         if (request.method === 'GET') {
+          const cookies = { ...secretCookies(env), ...(state.cookies ?? {}) };
+          return json({
+            ok: true,
+            at: new Date().toISOString(),
+            cookies,
+            config: await varsConfigOverride(env),
+            ledger: state.ledger,
+            pending: state.pending,
+            meta: state.meta,
+          });
+        }
+        if (request.method === 'POST') {
+          const body = await readJsonBody(request);
+          if (body === null) return fail('请求体必须是 JSON 对象');
+          const nextLedger = mergeLedger(state.ledger, body.ledger ?? {});
+          const nextPending = mergePending(state.pending, body.pending ?? []);
+          const nextMeta = mergeMeta(state.meta, { ...(body.meta ?? {}), at: new Date().toISOString() });
+          await saveLedger(env, nextLedger);
+          await savePending(env, nextPending);
+          await saveMeta(env, nextMeta);
+          let cookieKeys = Object.keys(state.cookies ?? {});
+          if (body.cookies !== undefined && body.cookies !== null && Object.keys(body.cookies).length > 0) {
+            const merged = mergeCookies(state.cookies, body.cookies);
+            await saveCookies(env, merged);
+            cookieKeys = Object.keys(merged);
+          }
+          await appendCloudLog(env, `state merged by ${String(body.meta?.writer ?? 'unknown')}（ledger：评论 ${nextLedger.comments.length} / 学习 ${nextLedger.study.length}，草稿 ${nextPending.length}）`);
+          return json({
+            ok: true,
+            mergedAt: new Date().toISOString(),
+            ledger: {
+              comments: nextLedger.comments.length,
+              replies: nextLedger.replies.length,
+              dynamics: nextLedger.dynamics.length,
+              study: nextLedger.study.length,
+              favorites: nextLedger.favorites.length,
+              dms: nextLedger.dms.length,
+            },
+            pending: nextPending,
+            meta: nextMeta,
+            cookieKeys,
+          });
+        }
+        return fail('只支持 GET / POST', 405);
+      }
+
+      // —— 心跳：本机报「我在岗」，云端据此让位（本机开机时云端不抢活）——
+      if (path === '/heartbeat') {
+        const now = Date.now();
+        state.meta = { ...state.meta, localSeenAt: now, localWriter: 'local' };
+        await saveMeta(env, state.meta);
+        return json({ ok: true, localSeenAt: now, at: new Date(now).toISOString() });
+      }
+
+      if (path === '/config') {        if (request.method === 'GET') {
           return json({ ok: true, config: state.cfg, overrides: await varsConfigOverride(env) });
         }
         if (request.method === 'POST') {
@@ -388,26 +485,14 @@ export default {
         if (id === '') return fail('需要 id');
         const draft = state.pending.find((item) => item.id === id);
         if (draft === undefined) return fail(`队列里没有 id=${id} 的草稿`, 404);
-        if (state.cfg.observeOnly === true) {
-          return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再发。', 409);
-        }
-        const clock = policyClock(state.cfg);
-        const { client, flush } = makeClient(state, env, ctx);
-        const video = await client.video(draft.bvid);
-        // 点头也要过一遍策略：草稿排队期间可能已经超了当日配额或撞上屏蔽词
-        const verdict = checkVideoComment({ cfg: state.cfg, ledger: state.ledger, bvid: draft.bvid, message: draft.message, confirm: true });
-        if (verdict.allowed !== true) {
-          await flush();
-          return json({ ok: false, verdict }, 409);
-        }
-        const created = await client.commentAdd({ aid: video.aid, bvid: draft.bvid, message: draft.message });
-        await flush();
-        recordComment(state.ledger, { bvid: draft.bvid, aid: video.aid, rpid: created?.rpid ?? null, text: draft.message, ts: clock.ts, now: clock.date });
-        state.pending = state.pending.filter((item) => item.id !== id);
-        await saveLedger(env, state.ledger);
+        // 只标记「主人点头了」。真发由手脚来做（本机在线就是本机，关机就是 GitHub Actions）：
+        // Cloudflare 的出口 IP 被 B 站 -412 拦死，Worker 自己发不出去。
+        draft.approved = true;
+        draft.approvedAt = new Date().toISOString();
         await savePending(env, state.pending);
-        await appendCloudLog(env, `draft approved+posted: ${draft.bvid} ${draft.message}`);
-        return json({ ok: true, bvid: draft.bvid, message: draft.message, rpid: created?.rpid ?? null });
+        await appendCloudLog(env, `draft approved（等手脚发送）：${draft.bvid}`);
+        const dispatched = await dispatchHands(env, 'patrol');
+        return json({ ok: true, id, bvid: draft.bvid, approved: true, dispatched });
       }
 
       if (path === '/reply') {
@@ -431,10 +516,25 @@ export default {
   async scheduled(event, env, ctx) {
     const run = async () => {
       try {
-        const result = await runPatrol(env, { trigger: 'cron' });
-        await appendCloudLog(env, `cron patrol: ${JSON.stringify(result).slice(0, 400)}`);
+        // 谁是「手脚」？—— 本机开机时本机跑（它自己有自己的定时器，Worker 让位）；
+        // 本机关机时，Worker 只负责**喊一声**，让 GitHub Actions 去跑。
+        const [meta, pending] = await Promise.all([
+          getJson(env?.WHALE_KV, 'state:meta', {}),
+          getJson(env?.WHALE_KV, 'state:pending', []),
+        ]);
+        const localFresh = Number(meta?.localSeenAt ?? 0) > 0 && Date.now() - Number(meta.localSeenAt) < LOCAL_TTL_MS;
+        if (localFresh) {
+          await appendCloudLog(env, `cron：本机在岗（${Math.round((Date.now() - Number(meta.localSeenAt)) / 1000)} 秒前还有心跳），云端只待命`);
+          return;
+        }
+        const approved = (Array.isArray(pending) ? pending : []).filter((item) => item?.approved === true);
+        const dispatched = await dispatchHands(env, approved.length > 0 ? 'patrol' : 'patrol');
+        await appendCloudLog(
+          env,
+          `cron：本机不在岗 → 喊手脚 ${dispatched.dispatched === true ? '成功' : `失败（${dispatched.reason ?? dispatched.status ?? ''}）`}，待发草稿 ${approved.length} 条`,
+        );
       } catch (issue) {
-        await appendCloudLog(env, `cron patrol FAILED: ${String(issue?.message ?? issue)}`);
+        await appendCloudLog(env, `cron FAILED: ${String(issue?.message ?? issue)}`);
       }
     };
     void event;
