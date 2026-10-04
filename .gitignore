@@ -12,3 +12,7 @@ cloudflare/port-test.out.txt
 
 .DS_Store
 Thumbs.db
+
+# 开发期临时探针
+_tmp-*.mjs
+cloudflare/test/_scratch.mjs
