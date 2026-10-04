@@ -42,6 +42,9 @@ const WHALE_TOKEN = String(process.env.WHALE_TOKEN ?? '');
 const HOME = process.env.RUNNER_HOME ?? join(tmpdir(), 'whale-state');
 mkdirSync(HOME, { recursive: true });
 process.env.DSH_HOME = HOME;
+/** 插件把状态放在 $DSH_HOME/bilibili-whale（看 lib/config.js 的 stateDir），别写错层。 */
+const STATE = join(HOME, 'bilibili-whale');
+mkdirSync(STATE, { recursive: true });
 
 const say = (line) => console.log(line);
 const summary = [];
@@ -71,11 +74,11 @@ async function pullState() {
     const seed = JSON.parse(process.env.BILI_COOKIES);
     Object.assign(cookies, seed?.cookies ?? seed);
   }
-  writeFileSync(join(HOME, 'cookies.json'), JSON.stringify({ cookies, savedAt: new Date().toISOString() }, null, 2));
+  writeFileSync(join(STATE, 'cookies.json'), JSON.stringify({ cookies, savedAt: new Date().toISOString() }, null, 2));
   if (state.config && Object.keys(state.config).length > 0) {
-    writeFileSync(join(HOME, 'config.json'), JSON.stringify(state.config, null, 2));
+    writeFileSync(join(STATE, 'config.json'), JSON.stringify(state.config, null, 2));
   }
-  if (state.ledger) writeFileSync(join(HOME, 'ledger.json'), JSON.stringify(state.ledger, null, 2));
+  if (state.ledger) writeFileSync(join(STATE, 'ledger.json'), JSON.stringify(state.ledger, null, 2));
   return { cookies, pending: state.pending ?? [], meta: state.meta ?? {} };
 }
 

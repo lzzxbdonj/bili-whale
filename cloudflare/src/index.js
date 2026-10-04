@@ -26,6 +26,7 @@ import {
   savePending,
   saveMeta,
   saveUserConfig,
+  secretCookies,
   varsConfig,
 } from './store.js';
 import { enqueueDraft, runPatrol, timezoneShiftMs } from './patrol.js';
