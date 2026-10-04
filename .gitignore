@@ -1,0 +1,14 @@
+# 本地状态与机密：绝不入库
+node_modules/
+*.log
+login-qr.html
+pending-qr.json
+
+# 云端（Cloudflare）本地产物
+cloudflare/.wrangler/
+cloudflare/.dev.vars
+cloudflare/_secret_env.txt
+cloudflare/port-test.out.txt
+
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+# 机密与本地构建产物绝不入库
+_secret_env.txt
+.dev.vars
+.wrangler/
+node_modules/
+port-test.out.txt
+*.log

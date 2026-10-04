@@ -1,0 +1,13 @@
+{
+  "name": "bili-whale",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "小鲸鱼娘女仆的云端常驻（Cloudflare Worker）：cron 巡检 B 站消息中心/评论区，自动回复与定时动态，视频一级评论排队等主人点头。",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node test/port.test.mjs"
+  }
+}

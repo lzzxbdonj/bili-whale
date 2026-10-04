@@ -1,0 +1,57 @@
+# 小鲸鱼娘女仆 · 云端常驻（Cloudflare Worker + 定时触发）
+#
+# 部署：见同目录 README.md（一条龙：建 KV → 写机密 → deploy → 验证）。
+# 说明：Worker 负责 7×24 巡检（回复消息中心的评论、按策略发动态、把视频一级评论排成待确认草稿），
+#      本机 DSH 插件（dsh-bilibili-whale）负责「主人点头」与更细的交互。
+name = "bili-whale"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# 定时巡检：每 10 分钟一次。每日动态的时点由 DAILY_DYNAMIC_AT（默认 20:30，Asia/Shanghai）
+# 在巡检里判断，因此 cron 只用一条固定频率，避免 UTC 换算踩坑。
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+# —— 身份 ——
+OWNER_NAME = "懒寻真"
+OWNER_MID = "3494364865103885"
+WHALE_NAME = "bili_83352132154"
+WHALE_MID = "3747560556595480"
+TIMEZONE = "Asia/Shanghai"
+
+# —— 策略（与插件端同一套语义；云端强约束，模型绕不过）——
+POST_VIDEO_COMMENT = "confirm"
+POST_REPLY = "auto"
+POST_DYNAMIC = "auto"
+DAILY_VIDEO_COMMENTS = "3"
+DAILY_REPLIES = "10"
+DAILY_DYNAMICS = "1"
+MIN_INTERVAL_SECONDS = "120"
+MIN_INTERVAL_SECONDS_OWNER = "15"
+MAX_COMMENT_CHARS = "200"
+REPLY_PER_USER_PER_THREAD = "1"
+REPLY_PER_USER_WINDOW_HOURS = "24"
+DAILY_DYNAMIC_AT = "20:30"
+FEED_SOURCE = "popular"
+
+# —— 观察模式 ——
+# true = 只读 + 排队（不发任何写请求）。账号还是 Lv0 未转正时保持 true，
+# 主人做完转正答题后改成 false 并重新 deploy（或 POST /config {"observeOnly":false}）。
+OBSERVE_ONLY = "true"
+
+# —— 文案模型（Workers AI）——
+PERSONA_MODEL = "@cf/qwen/qwen1.5-14b-chat-awq"
+
+# —— KV：账本 / 待确认草稿 / 运行时指纹 / 主人覆盖的配置 ——
+[[kv_namespaces]]
+binding = "WHALE_KV"
+id = "ca2d07df63b548f2bcf95b99d497ac3f"
+
+# —— Workers AI：用来按鲸鱼娘人格写评论/回复/动态（未绑定时自动回退模板）——
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true

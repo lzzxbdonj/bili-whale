@@ -1,0 +1,16 @@
+# dsh-bilibili-whale 组合包补丁：把小鲸鱼娘女仆的 B 站工具行插入 profile。
+# 本补丁按 id 覆盖；你可以在自己 profile（或 home）的 cordis.patch.yml 里覆盖 config。
+# 不写 config 也能跑，全部字段与默认值见 README 与 lib/config.js 的 DEFAULTS。
+#
+# 常用覆盖示例：
+#   policy:
+#     postVideoComment: confirm   # auto | confirm | off —— 视频一级评论
+#     postReply: auto             # auto | confirm | off —— 回复评论
+#     postDynamic: auto           # auto | confirm | off —— 发动态
+#   dailyDynamic:
+#     enabled: true
+#     at: '20:30'
+- insert:
+    - id: biliwhale
+      name: 'dsh-bilibili-whale'
+      config: {}

@@ -1,0 +1,36 @@
+name: probe-bilibili
+
+# 一次性探针：确认 GitHub Actions 的出口 IP 能不能访问 B 站。
+# 云端方案能否成立，全看这一份日志。
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 出口 IP 与归属
+        run: |
+          echo "IP: $(curl -s --max-time 15 https://api.ipify.org)"
+          curl -s --max-time 15 https://ipinfo.io/json || true
+
+      - name: 探针：B 站各域名 + 对照
+        run: |
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+          probe() {
+            local url="$1"
+            local code
+            code=$(curl -s -o /tmp/body -w '%{http_code}' -A "$UA" \
+              -H 'Referer: https://www.bilibili.com/' -H 'Origin: https://www.bilibili.com' \
+              --max-time 20 "$url" || echo ERR)
+            echo "== http $code  $url"
+            head -c 240 /tmp/body; echo; echo
+          }
+          probe "https://api.bilibili.com/x/web-interface/nav"
+          probe "https://api.bilibili.com/x/frontend/finger/spi"
+          probe "https://api.bilibili.com/x/web-interface/popular?ps=5&pn=1"
+          probe "https://api.bilibili.com/x/web-interface/view?bvid=BV1WYeS6YEwt"
+          probe "https://api.vc.bilibili.com/session_svr/v1/session_svr/get_sessions?session_type=1&build=0&mobi_app=web"
+          probe "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+          probe "https://www.bilibili.com/"
+          probe "https://api.github.com/zen"
