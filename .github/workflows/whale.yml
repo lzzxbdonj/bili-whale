@@ -1,0 +1,53 @@
+name: whale
+
+# 小鲸鱼娘的云端身体：本机关机也照常上班。
+#   - 每 10 分钟一次 patrol：放行主人点头的草稿 → 回私信 → 回主人评论 → 排一条视频评论草稿 → 到点发学习动态
+#   - 一天三次 study：自己找方向、自己挑视频学、写笔记；觉得有意义的留言进待确认箱
+# 私有仓库免费额度 2000 分钟/月：patrol 每 10 分钟约 1440 分钟/月，学习每次几分钟，都在额度内。
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # patrol（UTC；北京时间为每 10 分钟一次）
+    - cron: '0 1,9,13 * * *' # study（北京时间 09:00 / 17:00 / 21:00）
+  workflow_dispatch:
+    inputs:
+      task:
+        description: '要跑的任务'
+        required: false
+        default: patrol
+        type: choice
+        options: [patrol, dm, daily, study, report]
+
+concurrency:
+  group: whale
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 决定这次跑什么
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "task=${{ inputs.task }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 1,9,13 * * *" ]; then
+            echo "task=study" >> "$GITHUB_OUTPUT"
+          else
+            echo "task=patrol" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 干活
+        env:
+          WHALE_URL: ${{ secrets.WHALE_URL }}
+          WHALE_TOKEN: ${{ secrets.WHALE_TOKEN }}
+          BILI_COOKIES: ${{ secrets.BILI_COOKIES }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TZ: Asia/Shanghai
+        run: node cloud/run.mjs --task=${{ steps.pick.outputs.task }}

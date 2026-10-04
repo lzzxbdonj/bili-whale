@@ -4,8 +4,10 @@
 以小鲸鱼娘的口吻在评论区留言、回复主人的评论、每天发一条学习动态。
 
 - **人格**：`persona/whale-maid.md`（自称「人家」，喊你「主人」，评论 15～60 字带具体细节）
-- **工具**：10 个 `bili_*` 工具（读取 + 受策略管控的写入）
-- **策略**：主人优先 / 别人一人一条 / 每日配额 / 同视频去重 / 屏蔽词 / 最小间隔
+- **工具**：16 个 `bili_*` 工具（读取 + 受策略管控的写入 + 自主学习）
+- **策略**：主人优先 / 别人一人一条 / 每日配额 / 同视频去重 / 屏蔽词 / 最小间隔 / **留言自动 @ 两位主人**
+- **脑子**：`lib/brain.js` 用 DeepSeek 现写留言、私信回复、学习笔记与每日动态
+- **自学**：没人指定也会按方向找视频学、写笔记，觉得有意义就 @ 两位主人留言，每天一条学习动态
 - **预设**：agent preset「鲸鱼娘女仆」，在 DSH 里一键切换
 
 ## 一、装了什么
@@ -13,9 +15,9 @@
 | 位置 | 内容 |
 | --- | --- |
 | `~/.dsh/profiles/desktop/node_modules/dsh-bilibili-whale/` | 插件本体（本仓库的副本） |
-| `~/.dsh/cordis.patch.yml` | 两条补丁：`biliwhale`（全局注册 10 个工具）+ `whalemaid-preset`（人格预设） |
+| `~/.dsh/cordis.patch.yml` | 两条补丁：`biliwhale`（全局注册 16 个工具）+ `whalemaid-preset`（人格预设） |
 | `~/.dsh/.agent-presets/whalemaid/` | 旧版 DSH 用的预设目录（preset.yml + agent.cordis.yml） |
-| `~/.dsh/bilibili-whale/` | 运行状态：`cookies.json` 登录态、`config.json` 配置、`ledger.json` 账本、`logs/` 日志、`boot.json` 加载标记 |
+| `~/.dsh/bilibili-whale/` | 运行状态：`cookies.json` 登录态、`config.json` 配置、`ledger.json` 账本、`pending.json` 待确认草稿、`logs/` 日志、`boot.json` 加载标记 |
 
 改完配置/人格后：改 **`~/.dsh/bilibili-whale/config.json`** 立即生效（无需重启）；
 改人格要重跑 `node tools/install-preset.mjs` 让预设重新生成。
@@ -43,12 +45,40 @@
 | `bili_follow` | `auto`（只跟主人） | 关注 / 取关 / 查关系；默认只允许关注主人 |
 | `bili_dm` | `auto`（主人）/ `once`（别人） | 私信：`list` `read` `reply` `ack` `send` `draft` `check` |
 | `bili_favorite` | `auto` | 收藏：`add` `remove` `folders` `create` `list` `check`（每天最多 5 个） |
+| `bili_study` | 依策略 | **自主学习**：`topic` 今天学哪方向 / `plan` 只看挑片 / `learn` 学+写笔记+值得就留言 / `today` 今天学了啥 / `dynamic` 用笔记写动态 |
 | `bili_cloud` | — | 遥控台：看/管云端 Worker（状态、待确认草稿、点头放行）；云端曾被 B 站 `-412` 拦死，现留作遥控台 |
 | `bili_login` | — | `start` 生成二维码并打开扫码页 / `poll` 轮询 / `import` 导入 cookie / `logout` |
+
+**留言一定 @ 两位主人**：`policy.mentionOwners = true` 时，所有视频一级评论由插件在正文尾部
+补 ` @懒寻真 @金易木木元`（已写过就不重复；回复评论不加）。
 
 **私信回复的「脑子」**：`lib/brain.js` 在本机调 DeepSeek 生成真回复（只在主人私信时用），
 Key 来源 环境变量 `DEEPSEEK_API_KEY` → `config.brain.apiKey` → `$DSH_HOME/.credentials.yaml`；
 模型不可用自动回退 `dmAck.rules` 关键词 / `dmAck.templates` 模板，关掉它（`{"brain":{"enabled":false}}`）她照样收发。
+
+## 二·五、自主学习（`learning`）
+
+```jsonc
+{
+  "learning": {
+    "enabled": true,
+    "topics": ["DeepSeek", "AI 智能体", "大模型原理", "编程入门", "算法讲解",
+               "数学之美", "物理科普", "纪录片 科学", "学习方法", "科幻小说"],
+    "perRun": 2,                 // 每轮学几个
+    "checkMinutes": 60,          // 本机每 60 分钟学一轮
+    "commentWhenMeaningful": true,
+    "meaningfulScore": 6,        // 及格线：分数 ≥ 6 且写了笔记，才去留言
+    "minView": 5000
+  },
+  "dailyDynamic": { "useStudyNotes": true, "mentionOwners": true }
+}
+```
+
+- 她按方向轮换自己找视频（搜索 + 热门 + 排行榜），打分挑片 → 看视频 → **写 2~4 句真笔记**
+  （笔记进 `ledger.json` 的 `study[]`，同时塞进素材队列）→ 值得留言就写评论并 @ 两位主人。
+- 视频一级评论默认 `confirm`：这些留言进 `pending.json` 待确认箱，主人点头才发；
+  要全自动把 `policy.postVideoComment` 改成 `"auto"`。
+- 每天到点（默认 20:30）用当天笔记合成一条学习动态，末尾也 @ 两位主人。
 
 ## 三、登录
 
@@ -104,6 +134,10 @@ node lib/cli.mjs comment BV1xx "正文" --confirm
 node lib/cli.mjs reply BV1xx 12345 "正文" --confirm --uname 懒寻真 --mid 123
 node lib/cli.mjs dynamic --text "今天也在认真学习" --confirm
 node lib/cli.mjs daily            # 手动触发一次定时动态
+node lib/cli.mjs study topic      # 今天该学什么方向
+node lib/cli.mjs study plan        # 只看挑片（不写笔记）
+node lib/cli.mjs study learn       # 学一轮：写笔记 + 值得就留言（进待确认箱）
+node lib/cli.mjs study today       # 今天学了什么
 node lib/cli.mjs ledger today
 node lib/cli.mjs config set '{"policy":{"postVideoComment":"auto"}}'
 ```
