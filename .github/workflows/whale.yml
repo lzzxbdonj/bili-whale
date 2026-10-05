@@ -19,7 +19,7 @@ on:
         required: false
         default: patrol
         type: choice
-        options: [patrol, dm, daily, study, report, brain]
+        options: [patrol, dm, daily, study, report, brain, login]
 
 concurrency:
   group: whale

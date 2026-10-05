@@ -15,7 +15,7 @@
  * 用法：
  *   WHALE_URL=https://bili-whale.<account>.workers.dev \
  *   WHALE_TOKEN=<遥控台令牌> BILI_COOKIES='{...}' DEEPSEEK_API_KEY=sk-... \
- *   node cloud/run.mjs [--task patrol|dm|daily|study|report] [--dry]
+ *   node cloud/run.mjs [--task patrol|dm|daily|study|report|brain|login] [--dry]
  *
  * 日志纪律：只打印计数与结论，**绝不打印私信正文或 cookie**（公共仓库的 Actions
  * 日志任何人都能看）。
@@ -416,6 +416,23 @@ async function main() {
   if (TASK === 'brain') {
     await brainCheck();
     say('== 结果：脑子自检完成');
+    return;
+  }
+
+  // 体检：只问一句「从这里能登录吗」，**不写云端、不碰 B 站的任何动作接口**。
+  //
+  // 为什么单独留一条（2026-10-05 主人问「电脑关了她为什么就不能说话了」）：
+  // 云端有两条路 —— Cloudflare Worker（出口 IP 被 B 站整段风控，见文件头注释）和
+  // GitHub Actions（Azure 出口）。光看 `/status` 分不清是「谁被拦」：Worker 的那份
+  // 本来就是拦的。排查「不跑本机到底通不通」时先跑一轮 `--task=login`，一眼看清
+  // 这台 runner 的 IP 到底能不能当她。因为它不写云端，所以也不受 KV 写额度的影响。
+  if (TASK === 'login') {
+    const { buildBiliTools } = await import('../lib/tools.js');
+    const run = makeRunner(buildBiliTools({ pluginConfig: {} }));
+    const status = await run('bili_status', {});
+    const yes = status?.loggedIn === true;
+    say(`登录：${yes ? '已登录' : '未登录'} · 等级 Lv${status?.level ?? '?'} · 可写：${status?.canWrite === true ? '是' : '否'}`);
+    say(`== 结果：${yes ? '这台 runner 能当她（手脚可用）' : '这台 runner 登录不上（B 站不认）'}`);
     return;
   }
 
