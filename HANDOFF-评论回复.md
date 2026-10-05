@@ -618,7 +618,7 @@ console.log(await runReplyCheck({}));
     旧配置里 `dailyVideoComments: 0` 是**不限量**，所以那段时间视频评论照发。
   - **写量账**：本机 `syncOnce` 每 5 分钟一轮 = `POST /state`（账本+cookie+草稿+meta ≈ 4 写）+ `POST /config`（1 写），
     再加 GH cron 与 Worker cron，一天一千多次 ⇒ 中午见底。**额度按 UTC 零点重置（北京时间早上 08:00）**。
-  - **已做的四道修**（提交 `618bb0f` + `0a69f5b`，`cloudflare` 已 deploy `78da486c-0da8-4fc8-bc71-ff29c1ac226c`）：
+  - **已做的五道修**（提交 `618bb0f` + `0a69f5b` + `fa63ed9`，`cloudflare` 已 deploy **`bd2e286f-a288-4d60-ab4a-91ba2adf2230`**，上一版 `78da486c-0da8-4fc8-bc71-ff29c1ac226c`）：
     1. **Worker 端**：`/state`·`/config`·`/heartbeat` 都回 `persisted`（`false` = 没落盘）；`/state` 不再每轮 `appendCloudLog`（省一次写）；
        新增 **`POST /probe`**（写一个 nonce 再读回来）。
     2. **`cloud/run.mjs`**：动手之前先 `storeWritable()`（打 `/probe`），读不回来就 `return` —— 宁可少干一轮，不拿旧账本重复回复。
@@ -626,6 +626,12 @@ console.log(await runReplyCheck({}));
        日志里 `待命=` 现在区分「是（本机在岗）」与「是（云端 KV 写不进去）」。
     4. **本机 `lib/cloudsync.js`**：`pushState`/`pushConfig` 带指纹，内容没变就整轮跳过（心跳至少每 5 分钟一次）；
        没落盘就**不记指纹**（下轮重试），并写 `push 没落盘：云端 KV 写不进去（免费写额度见底？）`。
+       内容没变但心跳旧了的时候**只打 `/heartbeat`**（1 写）而不是重推二十多 KB 的账本（`heartbeat()` 现在会把
+       `persisted` 透传出来，`lib/cloudsync.js:297`）。
+    5. **Worker 端「内容没变就不写」**（最省的一刀，也是唯一**不依赖本机升级**的一刀）：`/state` 只写真的变了的
+       账本/草稿/cookie，`meta` 只要存的那份心跳还在 10 分钟内（`META_SKIP_MS`）就不重写，响应里多回 `skipped` / `wrote`；
+       `/config` 内容没变既不写也不记日志。**宿主里还跑着旧代码的定时器也因此在云端被跳过**（旧代码每 5 分钟照推，
+       云端一比对就跳过，通常 0～1 写）。
   - **频率**：`.github/workflows/whale.yml` 的 cron `*/10` → **`*/30`**，`cloudflare/wrangler.toml` 的 `[triggers] crons` 同步改 `*/30`
     （私有仓库 Actions 免费额度 2000 分钟/月，`*/10` 是 2880 轮/月，稳超；改小后约 1440 轮/月）。
   - **⚠ `wrangler.toml` 的 `[vars]` 会盖住 `cloudflare/src/policy.js` 的代码默认值**（`varsConfig` → `deepMerge`），
@@ -634,6 +640,11 @@ console.log(await runReplyCheck({}));
   - **实测证据**：GH dispatch run `37270399633`（13 秒就结束）日志只有两行结果 ——
     `状态拉取完成：cookie 5 项 · 账本草稿 6 条` 接着就是 `云端 KV 写不进去（读回来的 nonce 对不上）→ 本轮不动作，免得拿着旧账本重复回复`；
     `bili_cloud op=patrol` 也回 `standby: true` + 同样的 notes。
+    线上 `/state` 连打三次空 body 自带证据（临时探针，跑完已删）：三次都是
+    `{"persisted":false,"wrote":1,"skipped":["ledger","pending"]}` —— **账本/草稿确实没写（跳过生效）**，
+    唯一那次写是 `meta`（存的心跳已经旧过 10 分钟，该重写），`persisted:false` 则继续证明额度还没恢复。
+  - **⚠ 宿主（DSH 主进程 11384 里的插件）跑的还是老代码**：改 `lib/*.js` 必须重启宿主才会重新加载模块（Node ESM 只在启动时读）。
+    老代码不知道指纹/跳过，会照旧每 5 分钟推一次 —— 靠上面第 5 刀在云端拦掉。**要彻底省，得重启一次 DSH**（主人决定）。
   - **额度恢复之前**：云端两条线都不会碰 B 站（本机看门鲸照常干活，它用的是本机 `ledger.json`，安全的那条）。
     恢复之后第一次对账会把新配置/新账本自动补上去（没落盘的指纹没记，所以会自动重试），**不用手动推**。
 
