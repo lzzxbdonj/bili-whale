@@ -1,14 +1,21 @@
 /**
- * 私信「真命令」的单元测试（主人 2026-10-05：「我想让她给我转达消息一直做不到」）。
+ * 私信「真命令 + 自然语言」的单元测试。
  *
- * 事故：主人在私信里让她提炼拉康视频、让她转达消息，她从 00:22 到 10:14 连着回了 8 次
- * 「马上就好」，一件事没办 —— 因为私信自动回复这条路**只会说话**，没有任何执行环节。
- * 这里钉住 `lib/dmcmd.js`：认命令 → 真执行 → 回执，而且不许把命令丢给模型。
+ * 第一起事故（2026-10-05 上午，主人：「我想让她给我转达消息一直做不到」）：主人在私信里让她
+ * 提炼拉康视频、让她转达消息，她从 00:22 到 10:14 连着回了 8 次「马上就好」，一件事没办 ——
+ * 因为私信自动回复这条路**只会说话**，没有任何执行环节。这里钉住 `lib/dmcmd.js`：
+ * 认命令 → 真执行 → 回执，而且不许把命令丢给模型。
+ *
+ * 第二起（2026-10-05 下午，主人：「私信刷视频不要命令形式，自然语言识别，让她自己刷」）：
+ * 主人不想背 `/刷` `/搜` 这些命令，于是有了 `lib/intent.js` —— 大白话也走**同一段执行代码**。
+ * 这里同时钉住 `lib/intent.js`：主人怎么说话都认得出，否定句（「别刷了」）和问方法
+ * （「怎么搜」）一律不动手。
  *
  * 用法：node test/dmcmd.test.mjs
  */
 import { strict as assert } from 'node:assert';
-import { dmCommandHelp, parseDmCommand, runDmCommand } from '../lib/dmcmd.js';
+import { dmCommandHelp, parseDmCommand, runDmCommand, runDmIntent } from '../lib/dmcmd.js';
+import { looksLikeActionRequest, parseIntent } from '../lib/intent.js';
 import { emptyLedger } from '../lib/ledger.js';
 
 const OWNER_A = 3494364865103885; // 懒寻真
@@ -93,12 +100,14 @@ const SEARCH_HITS = [
   assert.equal(parseDmCommand('/重启').raw, '重启');
 }
 
-// ── 2. 命令表 ─────────────────────────────────────────────────────────────
+// ── 2. 说明书：教的是**人话**，不再是斜杠命令 ───────────────────────────────
 {
   const help = dmCommandHelp();
-  assert.ok(help.includes('/搜'), '命令表要说清 /搜');
-  assert.ok(help.includes('/转达'), '命令表要说清 /转达');
-  assert.ok(help.length <= 200, `命令表要能塞进一条私信（实际 ${help.length} 字）`);
+  assert.ok(help.includes('搜一下'), `说明书要教她怎么用大白话让她搜（实际：${help}）`);
+  assert.ok(help.includes('自己'), '说明书要说清「她自己挑自己刷」这件事');
+  assert.ok(help.includes('转达'), '说明书要说清能替主人带话');
+  assert.ok(help.includes('/搜') !== true, '主人说不要命令形式，说明书里就不该再列斜杠写法');
+  assert.ok(help.length <= 200, `说明书要能塞进一条私信（实际 ${help.length} 字）`);
 }
 
 // ── 3. /搜：真去搜，回前三条 ───────────────────────────────────────────────
@@ -116,7 +125,7 @@ const SEARCH_HITS = [
 
   const empty = await runDmCommand({ cfg: CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: parseDmCommand('/搜') });
   assert.equal(empty.ok, false);
-  assert.ok(empty.text.includes('/搜'), '没给关键词要教怎么写');
+  assert.ok(empty.text.includes('搜一下'), '没给关键词要教怎么写');
 
   const none = await runDmCommand({ cfg: CFG, ledger: emptyLedger(), client: fakeClient({ searchResult: [] }).client, mid: OWNER_A, command: parseDmCommand('/搜 不存在的东西') });
   assert.equal(none.ok, false);
@@ -157,7 +166,7 @@ const SEARCH_HITS = [
   // 空正文
   const blank = await runDmCommand({ cfg: CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: parseDmCommand('/转达') });
   assert.equal(blank.ok, false);
-  assert.ok(blank.text.includes('/转达'), '没正文要教怎么写');
+  assert.ok(blank.text.includes('转达什么'), '没正文要教怎么说');
 
   // 闸门拦下时要如实回执（每天最多 3 条，塞满它）
   const full = emptyLedger();
@@ -173,12 +182,12 @@ const SEARCH_HITS = [
 {
   const help = await runDmCommand({ cfg: CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: parseDmCommand('/帮助') });
   assert.equal(help.ok, true);
-  assert.ok(help.text.includes('/搜'));
+  assert.ok(help.text.includes('搜一下'));
 
   const unknown = await runDmCommand({ cfg: CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: parseDmCommand('/重启') });
   assert.equal(unknown.ok, false);
-  assert.ok(unknown.text.includes('不认识'), '不认识就直说，别让模型编');
-  assert.ok(unknown.text.includes('/搜'), '顺手给命令表');
+  assert.ok(unknown.text.includes('没听懂'), '没听懂就直说，别让模型编');
+  assert.ok(unknown.text.includes('搜一下'), '顺手给人话说明书');
 
   const nada = await runDmCommand({ cfg: CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: null });
   assert.equal(nada.ok, false);
@@ -237,11 +246,124 @@ const SEARCH_HITS = [
   // 缺参数 / 拉不到：如实说，别假装刷了。
   const bare = await runDmCommand({ cfg: WATCH_CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: parseDmCommand('/刷') });
   assert.equal(bare.ok, false);
-  assert.ok(bare.text.includes('/刷'), '没给参数要教怎么写');
+  assert.ok(bare.text.includes('看什么'), '没给参数要教怎么说');
 
   const boom = await runDmCommand({ cfg: WATCH_CFG, ledger: emptyLedger(), client: fakeClient({ failVideo: 'B站接口返回 -412：请求被拦截' }).client, mid: OWNER_A, command: parseDmCommand('/刷 BV1M5411g7He') });
   assert.equal(boom.ok, false, '刷失败不能算办成');
   assert.ok(boom.text.includes('-412'), '失败原因要带回来');
 }
 
-console.log('✓ 私信命令测试通过：认命令、命令表、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、不认识就不猜');
+// ── 7. 自然语言：主人**不打命令**也必须能办成 ──────────────────────────────────
+//
+// 主人 2026-10-05：「私信刷视频不要命令形式，自然语言识别，让她自己刷。」
+// 这一节钉两件事：①解析器认得出大白话；②认出之后**走的是同一段真执行代码**（真搜、真进历史）。
+{
+  // 7.1 不是命令的话，一个字都不许动
+  assert.equal(parseIntent(''), null);
+  assert.equal(parseIntent('你好呀主人，今天心情怎么样？'), null, '纯聊天别乱动主人账号');
+  assert.equal(parseIntent('别刷了'), null, '否定句一律不动手');
+  assert.equal(parseIntent('先别搜拉康了'), null);
+  assert.equal(parseIntent('这个要怎么搜呀'), null, '问方法 ≠ 让去做');
+  assert.equal(parseIntent('刷完了吗'), null, '只是问问，不是让去刷');
+
+  // 7.2 搜：各种说法都要认出来，关键词要抠干净（尾巴上的「的视频」「吧」不能带进去）
+  const wantSearch = [
+    ['帮我搜一下拉康精神分析', '拉康精神分析'],
+    ['搜一下拉康精神分析', '拉康精神分析'],
+    ['你去找找拉康精神分析', '拉康精神分析'],
+    ['给我推荐几个拉康精神分析', '拉康精神分析'],
+    ['有没有拉康精神分析的视频', '拉康精神分析'],
+    ['你能不能帮我搜拉康的视频？', '拉康'],
+    ['搜一下拉康精神分析的视频吧', '拉康精神分析'],
+  ];
+  for (const [said, want] of wantSearch) {
+    const hit = parseIntent(said);
+    assert.ok(hit !== null, `这句得认出来：${said}`);
+    assert.equal(hit.name, 'search', `这句该当「搜」：${said}`);
+    assert.equal(hit.keyword, want, `关键词要抠干净：${said} → ${hit.keyword}`);
+  }
+  assert.equal(parseIntent('搜一下拉康的视频').keyword, '拉康', '「的视频」这种尾巴要去掉');
+
+  // 7.3 自己刷：没点名，她自己挑
+  for (const said of ['你自己去找点视频看看', '自己刷点视频吧', '你自己随便看看视频', '帮我自动刷点视频']) {
+    const hit = parseIntent(said);
+    assert.ok(hit !== null, `这句得认出来：${said}`);
+    assert.equal(hit.name, 'watch', `这句该当「自己刷」：${said}`);
+    assert.equal(hit.self, true, `没点名就该自己挑：${said}`);
+  }
+
+  // 7.4 点名刷：认 BV 号和关键词，个数也认
+  const byId = parseIntent('帮我看看 BV1M5411g7He');
+  assert.equal(byId.name, 'watch');
+  assert.equal(byId.self, false);
+  assert.equal(byId.target, 'BV1M5411g7He');
+  assert.equal(byId.keyword, '', 'BV 号不是搜索关键词');
+
+  const byWord = parseIntent('刷一下拉康精神分析的视频');
+  assert.equal(byWord.name, 'watch');
+  assert.equal(byWord.target, '拉康精神分析');
+  assert.equal(parseIntent('看 3 个拉康的视频').count, 3, '说 3 个就 3 个');
+  assert.equal(parseIntent('看两条拉康的视频').count, 2, '中文数字也认');
+
+  // 7.5 转达
+  const relay = parseIntent('帮我跟金易木木元说声谢谢');
+  assert.equal(relay.name, 'relay');
+  assert.equal(relay.target, '金易木木元 谢谢');
+  assert.equal(parseIntent('告诉懒寻真人家想他啦').name, 'relay');
+
+  // 7.6 「在支使人干活但认不出来」要能被标出来（好让脑子老实说办不到）
+  assert.equal(looksLikeActionRequest('帮我重启一下程序'), true, '认不出也要知道这是在支使人');
+  assert.equal(looksLikeActionRequest('你好呀主人'), false, '纯聊天不算支使');
+  assert.equal(looksLikeActionRequest('别去弄了'), false, '否定句不算支使');
+}
+
+// ── 8. 自然语言 → 真执行：不走脑子，走同一段代码 ────────────────────────────────
+{
+  // 8.1 「帮我搜一下…」真去搜
+  const { client, calls } = fakeClient({ searchResult: SEARCH_HITS });
+  const out = await runDmIntent({ cfg: CFG, ledger: emptyLedger(), client, mid: OWNER_A, uname: '懒寻真', text: '帮我搜一下拉康精神分析的视频' });
+  assert.equal(out.ok, true);
+  assert.equal(calls.length, 1, '只搜一次');
+  assert.equal(calls[0].path, 'search');
+  assert.equal(calls[0].keyword, '拉康精神分析', '要拿抠干净的关键词去搜');
+  assert.ok(out.text.includes('BV1X38BzWEBn'), '回执要带 BV 号');
+
+  // 8.2 「你自己去看点东西」真看、真进浏览记录、来源标 self
+  const self = fakeClient({ searchResult: SEARCH_HITS });
+  const ledSelf = emptyLedger();
+  const outSelf = await runDmIntent({
+    cfg: { ...CFG, policy: { ...CFG.policy, postTriple: 'auto', tripleMinScore: 6, dailyTriples: 10, tripleCoin: 1, reportHistory: true } },
+    ledger: ledSelf,
+    client: self.client,
+    mid: OWNER_A,
+    uname: '懒寻真',
+    text: '你自己去找点视频看看',
+  });
+  assert.equal(outSelf.ok, true);
+  assert.ok(self.calls.some((c) => c.path === 'historyReport'), '要真报 B 站浏览记录，历史里得看得到');
+  assert.equal(ledSelf.watched.length, 1, '要留下本机痕迹');
+  assert.equal(ledSelf.watched[0].source, 'self', '痕迹要标出来是她自己挑的');
+  assert.ok(outSelf.text.includes('自己按'), `回执要说清是她自己挑的（实际：${outSelf.text}）`);
+
+  // 8.3 「跟我跟 XX 说声谢谢」真发出去，而且正文里不许混进「帮我…说声」
+  const relay = fakeClient();
+  const outRelay = await runDmIntent({ cfg: CFG, ledger: emptyLedger(), client: relay.client, mid: OWNER_A, uname: '懒寻真', text: '帮我跟金易木木元说声谢谢' });
+  assert.equal(outRelay.ok, true);
+  assert.equal(relay.calls.length, 1);
+  assert.equal(relay.calls[0].path, 'sendMsg');
+  assert.equal(String(relay.calls[0].receiverId), String(OWNER_B), '要真发给另一位主人');
+  assert.equal(relay.calls[0].content, '谢谢', `转达是原样带话，动词不许混进去（实际：${relay.calls[0].content}）`);
+
+  // 8.4 认不出来就闭嘴（交回聊天链路），绝不假装办了
+  const nada = await runDmIntent({ cfg: CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, text: '帮我重启一下程序' });
+  assert.equal(nada.ok, false);
+  assert.equal(nada.text, '', '认不出来就别吭声，让脑子老实聊');
+
+  // 8.5 斜杠写法还得能用（老主人手熟）
+  const slash = fakeClient({ searchResult: SEARCH_HITS });
+  const outSlash = await runDmIntent({ cfg: CFG, ledger: emptyLedger(), client: slash.client, mid: OWNER_A, text: '/搜 拉康' });
+  assert.equal(outSlash.ok, true, '斜杠命令不能被自然语言那层吃掉');
+  assert.equal(slash.calls[0].keyword, '拉康');
+}
+
+console.log('✓ 私信测试通过：斜杠命令照旧、大白话也认（搜/自己刷/点名刷/转达）、否定句与问方法一律不动手、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、认不出就不猜');

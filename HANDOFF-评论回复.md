@@ -1,10 +1,11 @@
-# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第三轮：全绿已上线**）
+# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第六轮：私信大白话识别已上线** —— 看 §1.8）
 
 > 给接手的会话：这份文件是唯一权威的交接说明。仓库 **`E:\donk\dsh-bilibili-whale`**（git 分支 `master`），
 > 宿主插件装在 **`C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale`**，
 > 状态/日志目录 **`C:\Users\Administrator\.dsh\bilibili-whale\`**（`config.json` / `ledger.json` / `cookies.json` / `logs\auto.log` / `logs\brain.log`）。
 >
 > **上一轮交接里「还没做的事」①–⑦ 已全部做完，另外查出并修掉了两个真 bug。** 见 §3。
+> **第六轮**（最新）：私信不再要求斜杠命令 —— 主人说人话她就当场办（§1.8）；云端付费脑子到底怎么配也写在 §1.8。
 
 ## 1. 主人的诉求（原话）
 - m04637：「完善一下评论回复」。
@@ -23,6 +24,8 @@
 - **修 A**：`lib/brain.js` 的 `draftDmReply` 加三条主人侧硬规则（「你**没有手**」「绝不许说『我这就去/马上就好/已经准备好了』」「宁可认怂也别许兑不了的承诺」）；
   `lib/tools.js` 的 `capabilityNote()` 把「别说自己做不到」改成「分清**谁在按按钮**：上面那些是托管她的程序会做的事，她自己在私信里只能说话；要搜清单/要转达/要重启得主人在电脑前点一下」。
 - **修 B（新模块 `lib/dmcmd.js` + `test/dmcmd.test.mjs`）**：主人私信里的**真命令走代码执行，绝不交给脑子**。
+  > ⚠️ **已被 §1.8 取代**：主人后来不要斜杠命令了（「私信刷视频不要命令形式，自然语言识别」），所以命令表本身仍保留可用，
+  > 但主通道改成**大白话**（`lib/intent.js`）。下面这套是它的底座。
   - `/搜 <关键词>` → 真去 `client.search`，回前三条（标题｜UP｜播放压成「万」｜时长｜BV号），压到 `maxCommentChars`(200) 以内；
   - `/转达 [昵称] <正文>` → 真 `client.sendMsg` 给另一位主人（过 `checkDm` 同一道闸门 + `recordDm` 记账）；
     开头第一个词**只有**正好是 `ownerNames` 里某位才当收件人，对不上就整串当正文（转错人比不转更糟）；
@@ -126,7 +129,64 @@
 - 真机验证：`ensureDailyWatch` → `{ok:true, already:6}`（今天已有痕迹，正确跳过）；
   `/刷 BV1M5411g7He` → `刷了 1 个，三连 1 个：BV1M5411g7He｜…｜进历史✓｜三连✓｜热评3`，账本 `watched` 里 `source: master`。
 
-## 2. 本轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
+### 1.8 第六轮：私信**不要命令形式**（大白话识别）+ 云端付费脑子到底怎么配
+主人原话（本轮入口）：「私信刷视频不要命令形式，自然语言识别让她自己刷，云端手脚改付费模型告诉我要怎么做」。
+
+**① 大白话进得来，并且当场执行 —— 新模块 `lib/intent.js`（不是模型分类器，是确定性解析器）**
+- 为什么不用模型分类：铁律没变 —— **要办事的必须走代码，模型只负责写回执的语气**。分类器一抽风就又是假承诺。
+- `parseIntent(text)` → `{ name:'search'|'watch'|'relay', target, keyword, self, count, source }` 或 `null`：
+  - 认「搜一下拉康精神分析」「帮我找找有没有讲三体的」「推荐几个算法讲解的视频」→ `search`；
+  - 认「自己去找点视频看看」「你自己看着办」「随便刷刷」「想学啥学啥」→ `watch` + `self:true`（**她自己挑**）；
+  - 认「看 3 个拉康的视频」「刷两条搞笑视频」「帮我看看 BV1xxxxxxxxxx」→ `watch` + 点名的目标/个数；
+  - 认「帮我跟金易木木元说声谢谢」「转告他一声我明天到」→ `relay`（`splitRelayTarget()` 切收件人，只在句首 1–8 字像人名时才切，**发错人比不发更糟**）。
+- **三条守卫**（都是真机踩出来的，测试里钉死了）：
+  1. 否定（`别/不要/不用/先别/取消…`）→ `null`，一个字都不办；
+  2. 问方法（`怎么/如何/能不能教我…`）→ 只在**认不出动作**时才判 `null`。理由：主人求人办事最自然的说法就是「你能不能帮我搜一下…？」，先查末尾「能不能」会让**主人越客气她越不动手**（这是本轮最大的一个坑，推翻重来过一次）；
+  3. 问结果（`刷完了吗/搜到了没`）→ `null`，否则「刷完了吗」会被当成新任务。
+- 认不出但明显在支使人（`looksLikeActionRequest()`）→ 不再假装没看见：`capabilityNote()` 里加一句「这条**不是纯聊天**——主人在支使人干活，但程序没认出具体要干什么」，逼她老实说，而不是顺着编。
+- `lib/tools.js` 的 ack 分支现在**同一段代码**吃两种入口：`parseDmCommand()`（斜杠）与 `parseIntent()`（大白话）→ `runDmCommand({ command, intent })` → 真执行 → `checkDmReply` 闸门 → `client.sendMsg` → `recordDm` → 账本 `actions.log` 记 `dm-intent <动作>`。
+- **斜杠命令没删**（`/搜` `/刷` `/转达` `/帮助` 照旧可用，老习惯不断），只是 `dmCommandHelp()` 改成**人话说明书**（≤200 字，不再列斜杠）——她回「没听懂」时念的就是这三句：
+  「搜一下拉康精神分析」「自己去找点视频看看」「帮我跟金易木木元说声谢谢」。
+- **她自己去刷是真的刷**（真机验证，2026-10-05 11:44 探针 + 12:xx 复验）：`你自己去找点视频看看` →
+  `{name:'watch',self:true}` → `runWatchSelf()` 按今天轮到的方向（当时是「科幻小说」）真搜 → 挑播放最高的一条 →
+  **真报 B 站浏览记录**（`client.historyReport`）→ 真读热评 → 过三连闸门（这道闸门是通的，回了 `三连✓`）→ 回执
+  `人家自己按「科幻小说」挑的1条，看了：BV1o74y6XEcM｜一个人，耗时18个月…｜野生锅导演｜342.6万｜94:31｜进历史✓｜三连✓｜热评3`。
+  ⚠️ 探针第一版**我自己写错了**：拿一个只代理了 `search/video/comments/sendMsg` 的假 client 去跑，于是
+  `reportHistory` 报 `client.historyReport is not a function` 被静默吞成「没进历史」。教训记在这：**验链路要么用真 client，
+  要么把所有被调用的方法都代理上** —— `Proxy` 包真 client 只换 `sendMsg` 才是对的做法。
+- 测试：`test/dmcmd.test.mjs` 加了第 7、8 节（纯解析器逐条比对 + `runDmIntent` 真执行走假 client）。**八套仍然全绿**。
+- 顺手修掉一个真 bug：`runWatch()` 原来 `return await watchThese(...)`，而 `watchThese()` 的内部形状是 `{lines,tripled,text}`、
+  **没有 `ok` 字段** → 回执 `ok: undefined`，私信那层会当成「没办成」。现已改成显式 `{ ok:true, text: outcome.text }`。
+
+**② 主人问「云端手脚改付费模型告诉我要怎么做」—— 现状 + 只差一步**
+- 云端有**两只手脚**，付费这件事它们各算各的：
+  | 手脚 | 在哪 | 付费现状 | 还要做什么 |
+  |---|---|---|---|
+  | 本机看门鲸 / DSH 插件 | `tools/dm-watch.mjs` + 宿主 | **已经是付费**（`lib/brain.js` 读 `DEEPSEEK_API_KEY`，本机取自 `$DSH_HOME/.credentials.yaml`；`logs/brain.log` 全是「这次先用 deepseek（付费）」） | 不用动 |
+  | GitHub Actions（`.github/workflows/whale.yml`） | GitHub 仓库 secrets | **已经是付费**：`gh secret list --repo lzzxbdonj/bili-whale` 实测有 `DEEPSEEK_API_KEY`（2026-10-04T16:27:51Z） | 不用动（§1.7 那条「要另外加」已过时） |
+  | Cloudflare Worker（`cloudflare/`） | Worker secrets | **代码已就绪，secret 有没有待主人确认**：`cloudflare/src/persona.js` 的 `deepseekText()` 只读 `env.DEEPSEEK_API_KEY`；`draftReply()` 里 `isOwner===true` 才先试付费、失败静默回落免费 Workers AI；`cloudflare/src/patrol.js:298` 调它时传了 `isOwner` ⇒ **回主人的评论已经会走付费分支** | 给这只 Worker 加同名 secret（下面三步） |
+- **给 Cloudflare Worker 加付费 key（三步，主人自己在电脑前做，一条命令一次）**：
+  ```powershell
+  # 1) 先确认这只 Worker 现在有没有配（没有会报 "not found"，不影响下一步）
+  $env:HTTPS_PROXY='http://127.0.0.1:19451'
+  npx --yes wrangler@4 secret list --cwd cloudflare
+  # 2) 把本机那份 key 打到 Worker 上（key 在 C:\Users\Administrator\.dsh\.credentials.yaml 的 DEEPSEEK_API_KEY，
+  #    也可以直接用本机环境变量 $env:DEEPSEEK_API_KEY；粘进提示符时不会回显）
+  npx --yes wrangler@4 secret put DEEPSEEK_API_KEY --cwd cloudflare
+  # 3) 不用重新部署：secret 立即生效。验一下 Worker 还活着
+  npx --yes wrangler@4 deployments list --cwd cloudflare
+  ```
+  - 加完就生效，**不需要 `deploy`**（改 secret 是改运行时环境，不是改代码）。
+  - 验证方式：Worker 巡检回主人那条评论时，`cloudflare/src/persona.js` 会先打 `/chat/completions`；在 Cloudflare 面板
+    「Workers & Pages → bili-whale → Logs」能同时看到有没有报错回落。回落是**静默**的（设计如此，不让定时任务整条崩）。
+- ⚠️ **但云端现在发不出任何东西**：`bili_cloud op=config` 读到 `observeOnly: true`，`bili_cloud op=status` 显示
+  **未登录（云端没有可用 cookie）+ 等级 Lvnull + 观察模式开**；`cloudflare/src/index.js:271` 的 `canWrite` 要求
+  `isLogin===true && observeOnly!==true && level!==0` 三条同时成立。所以就算配好付费 key，**这只 Worker 也只排队不发**。
+  真要「云端当手」得：①登录云端那只号（cookie 同步 / 扫码）②关掉观察模式（`observeOnly:false`）③等级不为 0。
+  **当前分工是本机看门鲸干活、云端只排队**——这也正是「写操作永不给 Worker 加端点」那条坑的延续。
+
+
+## 2. 前几轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
 - **`b89bae1`** `feat(reply): 回复不带 @ / 回主人走付费脑子 / 脑子抽风重试 + 消息中心字段修正`
   （15 文件；含上一轮遗留的 `lib/api.js` 消息中心字段修正、`lib/reply.js` 挑人、动态评论 `type=17`、Worker 侧镜像。）
@@ -145,12 +205,14 @@
 `dmCheckMinutes 1` / `policy { maxDmReplyPerUserPerDay:20, minIntervalSecondsOwner:5, postVideoComment:'auto', postTriple:'auto' }`。
 其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.mentionOwnersOnReply: false`、`brain.paid: 'deepseek'` 这两个新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对）。
 
-### 2.4 测试（七套全绿，改动后请照跑）
+### 2.4 测试（**八套全绿**，改动后请照跑）
 ```powershell
 cd E:\donk\dsh-bilibili-whale
-node test/smoke.mjs; node test/mention-dm.test.mjs; node test/triple.test.mjs; node test/reply.test.mjs; node test/text.test.mjs
+node test/smoke.mjs; node test/mention-dm.test.mjs; node test/triple.test.mjs; node test/reply.test.mjs
+node test/text.test.mjs; node test/dmcmd.test.mjs
 node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 ```
+（注意目录里**没有** `test/smoke.test.mjs`，入口叫 `test/smoke.mjs`；第六轮新增的是 `test/dmcmd.test.mjs` 的第 7、8 节。）
 
 ### 2.5 真机验证（真的发出去了）
 - `BV1UAYd6WE2t`（主人那条「@寻和橼的大肥鱼dsh 要这样@」）：`rpid 316071900673` → `selfRpid 316077035713`。
@@ -158,8 +220,26 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸：pid **17468**，命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 15`，cwd 仓库根，日志 `dm-watch.log`（**已是新代码**）。
-  启动时要在**同一个 shell** 里先 `$env:HTTPS_PROXY='http://127.0.0.1:19451'` 再 `Start-Process`（子进程继承环境变量，云端心跳/对账才走得通）。
+- 看门鲸（第六轮重启过，**跑的是含大白话识别的新代码**）：pid **30700**（2026-10-05 11:44 起），
+  命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
+  cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（`Start-Process` 会把这两个文件**覆盖**重写，历史内容不留）。
+  **重启方式**（第六轮实际用的，不需要代理，因为看门鲸不再带 `HTTPS_PROXY`）：
+  ```powershell
+  Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'dm-watch' }  # 找 pid
+  Stop-Process -Id <pid> -Force
+  Start-Process -FilePath 'D:\360Downloads\node.exe' `
+    -ArgumentList 'tools/dm-watch.mjs','--minutes','0.33','--sync-every','15','--reply-every','6','--study-every','30' `
+    -WorkingDirectory 'E:\donk\dsh-bilibili-whale' -WindowStyle Hidden `
+    -RedirectStandardOutput 'E:\donk\dsh-bilibili-whale\dm-watch.log' `
+    -RedirectStandardError  'E:\donk\dsh-bilibili-whale\dm-watch.err.log'
+  ```
+  ⚠️ 改完 `lib/*.js` **必须重启看门鲸**：Node 的 ESM 模块缓存只在进程启动时读一次，改完文件不重启，跑的还是老代码
+  （第六轮原 pid 24124 是 11:31 起的，而 `lib/tools.js` 11:39、`lib/dmcmd.js` 11:40、`lib/intent.js` 11:41 才落地 —— 不重启就是白改）。
+
+### 2.7 第六轮之后的同步与代码状态
+- 同步方式：**没有 sync 脚本**，就是直接拷文件 —— `Copy-Item <repo>\{lib,cloud,cloudflare,persona,skills,assets,notes,tools,.github} <plugin>\ -Recurse -Force`（再加 `package.json`/`README.md`/`cordis.patch.yml`）。第六轮已同步，`lib/intent.js` 是新文件，**第一次同步必须确认它进去了**（`Test-Path <plugin>\lib\intent.js`）。
+- 宿主 DSH 侧：`lib/tools.js` 的 ack 分支改动要等宿主重启才会加载（§7）。
+
 
 ### 2.7 还剩两条待回（交给看门鲸/宿主定时器自然发，别手动催）
 `node` 跑一遍只读检查（见 §5 的脚本）会看到：
@@ -227,11 +307,16 @@ console.log(await runReplyCheck({}));
 
 ## 6. 未解决 / 待主人确认
 1. ~~「把这条会话的模式调到创造模式吧」~~ —— **主人已自己回答「你现在就是创造模式了」（第三轮）**，那条悬案结清，不用再去翻 `E:\donk\study-mate` 之类目录。
-2. Worker 自己的巡检（`cloudflare/src/patrol.js`）里「回复主人」仍然只能用 Workers AI（免费），**没走付费模型** —— 要不要给 Worker 也配 `DEEPSEEK_API_KEY`（需要主人同意加 secret）。
-3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。
-4. 私信命令只实现了 `/搜`、`/转达`、`/帮助`。主人若还想要别的（比如 `/办 <任务>` 落进待办、`/评论 <BV号>` 直接去留言），照 `lib/dmcmd.js` 的 `ALIASES` 加一条就行 —— 记住铁律：**要办事的命令必须走代码，走模型只会得到承诺**。
+2. ~~Worker 巡检回主人只能用免费模型~~ —— 代码侧已就绪（`deepseekText` + `draftReply` 的 `isOwner` 分支）。
+   **待办只剩一步「加 secret」，但那是改主人的 Cloudflare 账号，必须主人点头**（加 secret 的完整命令在 §1.8 ②）。
+   注意：本机与 GitHub Actions 两条线的 key **都已配好**，只有这只 Worker 待确认。
+3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。云端现状是 `observeOnly:true` + 未登录 ⇒ 只排队不发；真要它当手得先登录 + 关观察模式（§1.8 ②末尾）。
+4. 私信命令不只 `/搜`、`/转达`、`/帮助` 了：第六轮加了**大白话识别**（`lib/intent.js`）与 `/刷`。主人若还想要别的动作（比如「把这条记进待办」「去给 BVxxxx 留个言」），照 `lib/intent.js` 的 `matchIntent()` 加一档 + 在 `lib/dmcmd.js` 的 `runIntent()` 加一个分支就行 —— 记住铁律：**要办事的必须走代码，走模型只会得到承诺**。
+5. 遗留小瑕疵（不影响用）：她自己刷片时账本 `watched` 那条 `topic` 是空的（`watchThese` 收到的 `topic` 默认 `''`，只有回执文案里带了方向），主人要按方向统计「她自己刷了什么」会少一列。
 
 ## 7. ⚠️ 必须提醒主人
 - 宿主（DSH）**重启**才会加载新的评论回复定时器与提示词。不过第三轮实测：主人插件目录一同步，宿主的评论回复链路**看起来已经热重载**成新代码了（旧代码那种「每 5 分钟往同一条评论追一条」的刷屏在同步之后就停了，`待回` 也归零了）。所以重启是**保险**，不是必需。
-- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（现在 pid 4640）顶着。
-- 想让她跑腿，直接在私信里发 `/搜 关键词` 或 `/转达 正文` —— 这是第三轮新加的、**真的会执行**的通道。
+  - 第六轮又验证了一次这个现象：同步 `lib/tools.js`（11:39 落盘）之后宿主侧**没重启**，但看门鲸重启后大白话链路立刻可用。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（现在 pid **30700**）顶着。
+- 想让她跑腿，**直接说人话就行**：「搜一下拉康精神分析的视频」「你自己去找点视频看看」「帮我跟金易木木元说声谢谢」
+  （斜杠命令 `/搜` `/刷` `/转达` `/帮助` 也还留着，老的用惯了不会失效）。**说「能不能帮我搜…？」也算命令**，不会再被当成请教方法。
