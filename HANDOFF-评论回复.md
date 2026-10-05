@@ -1,4 +1,4 @@
-# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第九轮：多视频 / 自己刷有额度 / 另一位主人最高权限** —— 看 §1.10，上一轮看 §1.9）
+# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第十轮：陌生人放开 / 统一免费模型 / 间隔 60 秒 / 回复不挂 @ / 一条评论不再两端都回** —— 看 §1.11，上一轮看 §1.10）
 
 > 给接手的会话：这份文件是唯一权威的交接说明。仓库 **`E:\donk\dsh-bilibili-whale`**（git 分支 `master`），
 > 宿主插件装在 **`C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale`**，
@@ -7,8 +7,10 @@
 > **上一轮交接里「还没做的事」①–⑦ 已全部做完，另外查出并修掉了两个真 bug。** 见 §3。
 > **第六轮**：私信不再要求斜杠命令 —— 主人说人话她就当场办（§1.8）；云端付费脑子到底怎么配也写在 §1.8。
 > **第七轮**：**三连的视频都会顺手评论**（§1.9）、私信每日上限全关（§1.9 ①）、顺手修掉「和」字被当成转达动词的误判。
-> **第九轮**（最新）：一条私信能看**多个** BV 号且主人点名的片子不受额度限制（§1.10 ①）、她自己刷有**每天 30 个**的上限
+> **第九轮**：一条私信能看**多个** BV 号且主人点名的片子不受额度限制（§1.10 ①）、她自己刷有**每天 30 个**的上限
 > （§1.10 ②）、另一位主人拿到**调试最高权限**（私信运维台 + 免限额免间隔 + 远程重启，§1.10 ③）。
+> **第十轮**（最新）：陌生人限制取消（§1.11 ①）、**统一用免费模型**（两处付费入口全拆，§1.11 ②）、动作间隔 120→60 秒（§1.11 ③）、
+> 回复主人评论不挂 @（§1.11 ④）、**一条评论不再云端+本地各回一遍**（本机每轮先 pull 云端账本，§1.11 ⑤）。
 
 ## 1. 主人的诉求（原话）
 - m04637：「完善一下评论回复」。
@@ -291,7 +293,65 @@
 
 **⑤ 测试**：新增 **`test/debug.test.mjs`**（七种命令真办 / 秘密与危险路径拒绝 / 超长回执落盘且压在上限内 /
 `isDebugOwner` 名单与总开关 / `force` 免限额免间隔免去重但屏蔽词照拦）；`test/dmcmd.test.mjs` 新增第 9 节
-（一条私信多个 BV 号 / 个数到十 / 自己刷有额度而主人点名的不算）。**现在共九套，全绿。**
+（一条私信多个 BV 号 / 个数到十 / 自己刷有额度而主人点名的不算）。**现在共十套，全绿。**
+
+
+### 1.11 第十轮：陌生人放开 / 统一免费模型 / 间隔 60 秒 / 回复不挂 @ / 一条评论不再两端都回
+
+**主人原话（m01645）**：「陌生人限制取消，统一用免费模型处理，120秒间隔改成60秒，回复主人评论不用挂@，解决一条评论在云端和本地都回的问题」。
+
+**① 陌生人限制取消**
+- `policy.replyDmOthers: 'once'` → `'auto'`（陌生人私信不再「只自动回一条」，第二条也回）；
+  `policy.replyPerRunOthers: 1` → `3`（一轮里也放开，不只伺候一位陌生人）。
+- **保留的护栏**（别顺手删）：`replyPerUserPerThread: 1`（同一评论串每人最多回一条）、
+  `replyPerUserWindowHours: 24`（同一人 24 小时内最多回一条）、`allowDmToOthers: false`（她**仍然不会主动**给陌生人发私信，只被动回）。
+
+**② 统一用免费模型（付费入口全拆）**
+- 两处付费入口，改完就没了：`lib/brain.js:350` 的 `prefer: isOwner ? 'paid' : ''` → `prefer: ''`；
+  `lib/compose.js:162`（**回复评论**那条线，最容易漏）同样 `prefer: ''`。
+- `DEFAULT_BRAIN.fallback` / `paid`、`lib/config.js` 的 brain 段、`cloudflare/src/policy.js` 的 brain 段一起改；
+  `cloudflare/src/persona.js` 删掉 `deepseekText()`，`draftReply` 只走 `aiText`（Worker 侧再无付费分支）。
+- ⚠️ `brain.fallback` 最终**不是空**而是 `'pollinations'`（同样免费、不要 key）：第十轮当天实测
+  **Workers AI 免费额度（每天 10000 neurons）已被我们写评论用光**，云端 `/brain` 回
+  `502 … 4006: you have used up your daily free allocation of 10,000 neurons`，`fallback: ''` 时她只能发模板话；
+  改成 pollinations 后实测 **0.7 秒**答出真人话。**千万别为了「兜底」把 fallback 填回 `deepseek`**（那是花钱的那家）。
+- 看她到底用了哪家：`logs/brain.log` 的 `这次先用 <provider>`（付费那家会带「（付费）」）、换家写 `X 没答上来，换 Y`。
+
+**③ 间隔 120 → 60 秒**：`policy.minIntervalSeconds: 60`（主人侧不变，仍是 `minIntervalSecondsOwner`）。
+
+**④ 回复主人评论不再挂 @**：`policy.mentionOwnersOnReply` 本来就默认 `false`（第七轮定的），本轮把它**显式写进** `config.json`；
+代码里唯一会补 @ 的分支是 `lib/compose.js` 的 `tail = isOwner && cfg.policy.mentionOwnersOnReply === true` ⇒ 不动它就不会有尾巴。
+**一级评论的 @ 不受影响**（那走 `withOwnerMentions` / `commentAdd({mentions})`）。
+
+**⑤ 一条评论云端和本地都回（真因 + 四刀）**
+- 真因：两边的账本**只写不读对方的**。云端（GitHub Actions / Worker）趁本机不在时回过的评论，落在云端账本的
+  `replies[]` / `msgSeen{}` 里；本机巡逻时**只 push 不 pull**（`lib/cloudsync.js` 的 `pullState` 早写好了却从没被调用），
+  于是本机接手又回一遍。
+- 四刀：
+  1. `lib/cloudsync.js` 新增 `pullStateThrottled(pluginConfig, { minMs = 120000, force = false })`（模块级 `lastPullAt` 节流），
+     `syncOnce` 第一句变成 `await pullStateThrottled(pluginConfig, { force: true })`；日志写 `pull ok：并集后回复 N / 评论 N，云端草稿 M 条`。
+  2. `lib/index.js` 新增 `pullCloudQuiet(pluginConfig)`（fail-soft，不抛），`runDmCheck` 与 `runReplyCheck` **每轮先拉一次**；
+     成功写 `logs/auto.log` 的 `cloud pull: 回复 N / 评论 N`。
+  3. `cloudflare/src/patrol.js` 的 `runPatrol` 加**待命闸**：`state.meta.localSeenAt` 在 15 分钟内（`LOCAL_TTL_MS`）= 本机在岗，
+     跳过「消息中心回复 / 视频评论 / 动态」三段写动作，summary 里 `standby: true` + note；手动 `POST /patrol?force=1` 能压过它
+     （`cloudflare/src/index.js` 读 `force` 查询串传给 `runPatrol`）。
+  4. `lib/sync.js` 与 `cloudflare/src/sync.js` 的 `mergeLedger` 加
+     `out.msgSeen = mergeCounters(base?.msgSeen, incoming?.msgSeen)`。
+- ⚠️ **两份 sync.js 必须逐字一致**（Worker 打包不能引用仓库外的相对路径）—— 新增的 `test/sync.test.mjs` 第一条就是字节比对，
+  改了一份忘了另一份会直接红。
+- ⚠️ **第 3 刀改的是云端代码，Worker 线上跑的还是老版本，必须 `wrangler deploy` 才生效**（命令见 §2.2）。
+  部署 = 改主人 Cloudflare 账号的动作，**等主人点头**；本机那三刀（1/2/4）已同步 + 重启看门鲸，**已生效**。
+
+**⑥ 本轮真机验证**
+- 跨端去重：`logs/auto.log` 出现 `2026-10-05T05:23:49.140Z cloud pull: 回复 16 / 评论 16`，
+  `logs/cloudsync.log` 出现 `pull ok：并集后回复 16 / 评论 16，云端草稿 6 条` ⇒ 本机真把云端回过的那 16 条并进了自己的账本。
+- 免费链路：`_free-probe.mjs`（跑完即删）真调 `draftDmReply`（回主人私信）与 `composeCommentReply`（回主人评论）：
+  whale 额度用光 → `brain.log` 记 502/4006 → `whale 没答上来，换 pollinations` → 回执是真话。
+- 测试：**十套全绿**，含新增 `test/sync.test.mjs`（两份 sync.js 字节一致 / msgSeen 并集 / 云端回过的本机认得 / 老账本兼容 / cookie 与草稿合并）
+  与 `cloudflare/test/patrol.mock.test.mjs` 新增**场景 F**（心跳新鲜 → `standby: true` + 零写请求；`?force=1` 压过它）。
+
+**⑦ 本轮改动文件**：`lib/{config,brain,compose,cloudsync,index,sync}.js`、`cloudflare/src/{policy,persona,patrol,index,sync}.js`、
+`test/{reply,mention-dm}.test.mjs`、新增 `test/sync.test.mjs`、`cloudflare/test/{port,patrol.mock}.test.mjs`、本文件。
 
 
 ## 2. 前几轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
@@ -310,21 +370,24 @@
 ### 2.3 配置现状（`config.json` 的 userConfig）
 `ownerName 懒寻真` / `ownerMid 3494364865103885` / `ownerNames [懒寻真, 金易木木元]` /
 `ownerMids [3494364865103885, 391581639]` / `whaleName bili_83352132154` / `whaleMid 3747560556595480` /
-`dmCheckMinutes 1` / `policy { maxDmPerUserPerDay: 0, maxDmReplyPerUserPerDay: 0, dailyVideoComments: 0, dailyReplies: 10, dailyRepliesOwner: 0, dailyTriples: 0, minIntervalSecondsOwner: 5, postReply:'auto', postVideoComment:'auto', postTriple:'auto' }`（三个 0 都是第七轮主人要的「不限」）。
-其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.mentionOwnersOnReply: false`、`policy.commentOnTriple: true`、`policy.minIntervalSecondsComment: 10`、
+`dmCheckMinutes 1` / `policy { maxDmPerUserPerDay: 0, maxDmReplyPerUserPerDay: 0, dailyVideoComments: 0, dailyReplies: 10, dailyRepliesOwner: 0, dailyTriples: 0, minIntervalSecondsOwner: 5, minIntervalSeconds: 60, replyDmOthers: 'auto', replyPerRunOthers: 3, mentionOwnersOnReply: false, postReply:'auto', postVideoComment:'auto', postTriple:'auto' }` / `brain { fallback: 'pollinations', paid: '' }`（三个 0 是第七轮主人要的「不限」；`minIntervalSeconds: 60` + `replyDmOthers: 'auto'` + `replyPerRunOthers: 3` + `mentionOwnersOnReply: false` + `brain` 两项是第十轮主人要的）。
+其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.commentOnTriple: true`、`policy.minIntervalSecondsComment: 10`、
 `learning.dailyWatch: 30`（第九轮：她自己每天最多自己刷 30 个，主人点名的不计入）、`policy.ownerDebug: true` + `policy.debugMids: []`（第九轮：调试最高权限的开关与名单）
-、`brain.paid: 'deepseek'` 这几个新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对）。
+这些新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对。
 
-### 2.4 测试（**九套全绿**，改动后请照跑）
+### 2.4 测试（**十套全绿**，改动后请照跑）
 ```powershell
 cd E:\donk\dsh-bilibili-whale
 node test/smoke.mjs; node test/mention-dm.test.mjs; node test/triple.test.mjs; node test/reply.test.mjs
-node test/text.test.mjs; node test/dmcmd.test.mjs; node test/debug.test.mjs
+node test/text.test.mjs; node test/dmcmd.test.mjs; node test/debug.test.mjs; node test/sync.test.mjs
 node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 ```
 （注意目录里**没有** `test/smoke.test.mjs`，入口叫 `test/smoke.mjs`；第六轮新增的是 `test/dmcmd.test.mjs` 的第 7、8 节，
-第七轮新增的是 `test/triple.test.mjs` 的第 ⑩ 节，第九轮新增的是 `test/dmcmd.test.mjs` 的第 9 节与 **`test/debug.test.mjs`**（自带临时 `DSH_HOME`，不碰真状态目录）。
-⚠️ 跑测试会往真的 `logs/actions.log` 塞一行假评论（见 §1.9 ② 末尾）。）
+第七轮新增的是 `test/triple.test.mjs` 的第 ⑩ 节，第九轮新增的是 `test/dmcmd.test.mjs` 的第 9 节与 **`test/debug.test.mjs`**（自带临时 `DSH_HOME`，不碰真状态目录），
+第十轮新增 **`test/sync.test.mjs`** 与 `cloudflare/test/patrol.mock.test.mjs` 的**场景 F**（云端待命闸）。
+⚠️ 跑测试会往真的 `logs/actions.log` 塞一行假评论（见 §1.9 ② 末尾）。
+⚠️ 改 `lib/config.js` 的 DEFAULTS（或 cloudflare 镜像）后，`cloudflare/test/port.test.mjs:632` 的 deepEqual 会立刻报出来；
+改 `minIntervalSeconds` 这类默认值还会连带 `port.test.mjs` 里写死「策略要求至少 N 秒」的两处断言（第十轮踩过：改成 60 秒要同步改 605/617 与 498 行的时间差、以及 `patrol.mock.test.mjs:292` 的 `'120 秒'`）。）
 
 ### 2.5 真机验证（真的发出去了）
 - `BV1UAYd6WE2t`（主人那条「@寻和橼的大肥鱼dsh 要这样@」）：`rpid 316071900673` → `selfRpid 316077035713`。
@@ -332,11 +395,11 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸（第九轮重启过，**跑的是含「多视频 / 额度 / 调试台 / 自重启」的新代码**）：pid **6036**（2026-10-05 12:44:41 起，
-  由它**自己**按 §1.10 ③ 的「重启」命令从 pid 24560 换命而来），
+- 看门鲸（**第十轮又重启过一次**，跑的是含「免费模型 / 60 秒间隔 / 每轮先 pull 云端账本」的新代码）：pid **18824**（2026-10-05 13:26:36 起），
   命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
   cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（手动 `Start-Process` 会把这两个文件**覆盖**重写；它自己换命时是**追加**）。
-  **心跳**：`statePath('watchdog.json')` 每轮刷新（`bili_status` 之外，调试台「状态」也读它）。
+  **心跳**：`statePath('watchdog.json')` 每轮刷新（`bili_status` 之外，调试台「状态」也读它；`cloudflare/src/patrol.js` 的待命闸读的是云端 KV 里的 `meta.localSeenAt`）。
+- ⚠️ **改 `config.json` 不用重启**（`resolveConfig()` 每轮重读），**改 `lib/*.js` 必须重启**（Node ESM 只在进程启动时读一次模块）。
 - **现在有两种重启方式**：①主人在私信里对调试档主人说一句「重启」（写 `restart.request`，看门鲸下一轮自己换命）；
   ②手动重启（第六/七轮实际用的，不需要代理，因为看门鲸不再带 `HTTPS_PROXY`）：
   ```powershell
@@ -355,6 +418,8 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 同步方式：**没有 sync 脚本**，就是直接拷文件 —— `Copy-Item <repo>\{lib,cloud,cloudflare,persona,skills,assets,notes,tools,.github} <plugin>\ -Recurse -Force`（再加 `package.json`/`README.md`/`cordis.patch.yml`）。第六轮已同步，`lib/intent.js` 是新文件，**第一次同步必须确认它进去了**（`Test-Path <plugin>\lib\intent.js`）。
 - 第七轮又同步了一次（同样只拷改过的 9 个文件，逐个比 MD5 确认 `same`）：`lib/{compose,triple,policy,config,dmcmd,study,tools}.js`、`cloudflare/src/policy.js`、`test/triple.test.mjs`。
 - 第九轮整目录同步 `lib`、`cloudflare`、`tools`（`lib/debug.js` 是新文件，已确认 MD5 在插件目录里一致），比对了 `lib/intent.js`、`lib/debug.js`、`tools/dm-watch.mjs` 三个。
+- 第十轮又整目录同步 `lib`、`cloudflare`、`tools` + 三个测试文件，逐个比 MD5（`same`）：`lib/{config,brain,compose,cloudsync,index,sync}.js`、
+  `cloudflare/src/{policy,persona,patrol,index,sync}.js` —— 注意 `lib/sync.js` 与 `cloudflare/src/sync.js` 现在**同一个 MD5**（`test/sync.test.mjs` 盯着这件事）。
 - 宿主 DSH 侧：`lib/tools.js` 的 ack 分支改动要等宿主重启才会加载（§7）。
 
 
@@ -424,16 +489,15 @@ console.log(await runReplyCheck({}));
 
 ## 6. 未解决 / 待主人确认
 1. ~~「把这条会话的模式调到创造模式吧」~~ —— **主人已自己回答「你现在就是创造模式了」（第三轮）**，那条悬案结清，不用再去翻 `E:\donk\study-mate` 之类目录。
-2. ~~Worker 巡检回主人只能用免费模型~~ —— 代码侧已就绪（`deepseekText` + `draftReply` 的 `isOwner` 分支）。
-   **待办只剩一步「加 secret」，但那是改主人的 Cloudflare 账号，必须主人点头**（加 secret 的完整命令在 §1.8 ②）。
-   注意：本机与 GitHub Actions 两条线的 key **都已配好**，只有这只 Worker 待确认。
+2. ~~Worker 巡检回主人只能用免费模型~~ → **主人 2026-10-05（第十轮）改口：「统一用免费模型处理」** ——
+   `deepseekText()` 已从 `cloudflare/src/persona.js` 删除，Worker 的 `DEEPSEEK_API_KEY` secret 还留着但**没有任何代码再读它**
+   （想恢复付费兜底去 git 历史里找那段；**别悄悄把 `brain.fallback` 填回 `deepseek`**）。本机与 GitHub Actions 两条线同样不再点付费那家。
 3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。云端现状是 `observeOnly:true` + 未登录 ⇒ 只排队不发；真要它当手得先登录 + 关观察模式（§1.8 ②末尾）。
 4. 私信命令不只 `/搜`、`/转达`、`/帮助` 了：第六轮加了**大白话识别**（`lib/intent.js`）与 `/刷`。主人若还想要别的动作（比如「把这条记进待办」「去给 BVxxxx 留个言」），照 `lib/intent.js` 的 `matchIntent()` 加一档 + 在 `lib/dmcmd.js` 的 `runIntent()` 加一个分支就行 —— 记住铁律：**要办事的必须走代码，走模型只会得到承诺**。
 5. ~~她自己刷片时账本 `watched` 那条 `topic` 是空的~~ —— **第七轮已修**（`watchThese({ ..., topic })` 现在把方向传进 `reportHistory` / `tripleVideo`，见提交 `772b003`）。
-6. **待主人确认**（问过还没答）：① `policy.mentionOwnersOnReply` 要不要开回 `true`（开了 = 她**回复主人评论**时尾巴重新自动挂 `@懒寻真 @金易木木元`；
-   默认 `false`，理由是「回复不用 @」那条原话，但主人在 m00625 又问过「视频评论自动 @ 我们的功能怎么消失了」——实测**一级评论的 @ 一直是好的**，
-   消失的只是楼中楼回复里那个尾巴）；② `policy.replyDmOthers: 'once'`（陌生人只自动回一条，之后要主人点头）要不要放开；
-   ③ `minIntervalSeconds: 120`（对陌生人的动作间隔）要不要缩短。
+6. ~~**待主人确认**：① `policy.mentionOwnersOnReply` 要不要开回 `true`；② `policy.replyDmOthers: 'once'` 要不要放开；③ `minIntervalSeconds: 120` 要不要缩短。~~
+   —— **第十轮主人一句话全拍定（m01645）**：① 保持 `false` 并**显式写进** `config.json`（回复主人评论不挂尾巴；一级评论的 @ 一直是好的）；
+   ② 放开成 `'auto'`，并且 `replyPerRunOthers` 从 1 提到 3；③ 改成 `60` 秒。
 7. **「三连」实际是「两连」**（第七轮实测）：她账号硬币 `money: 0`，投币必然空转，见 §1.9 ②。想真三连得让她账号有硬币。
 8. **第九轮新上线的三件，请主人过后确认手感**：
    - ① 一次看多个：一条私信里写几个 BV 号就真看几个（最多 10 个）；也可以说「看 8 个拉康的视频」。
@@ -442,15 +506,29 @@ console.log(await runReplyCheck({}));
      他可以在私信里说「状态」「额度」「日志」「配置」「改配置 policy.x 8」「最近」「重启」。**`force` 只免限额/间隔/去重，屏蔽词与未登录照样拦**。
      「重启」现在是**真重启**（看门鲸下一轮自己换一条命，日志接回 `dm-watch.log`）。
    - 遗留提醒：`lib/debug.js` 是**新文件**，往插件目录同步时别漏（§2.7）；调试台挂在 `lib/tools.js` 的私信分支上，**宿主 DSH 侧要重启才加载**（看门鲸那条链路不受影响）。
+9. **第十轮留下的两件「只差一步」**（都要主人点头/知情）：
+   - ① **云端待命闸还没生效**：`cloudflare/src/{patrol,index}.js` 那三刀（本机在岗就 `standby: true` + `POST /patrol?force=1` 压过）
+     必须 `wrangler deploy` 才会部署到线上那张 Worker；**部署 = 改主人 Cloudflare 账号的动作，没点头不做**（命令见 §2.2）。
+     本机那三刀（每轮先 pull 云端账本 / mergeLedger 并 `msgSeen`）已经生效并真机验证过（§1.11 ⑥）。
+   - ② **Workers AI 的免费额度是每天 10000 neurons，会被写评论吃光**（第十轮当天就光了，`logs/brain.log` 里
+     `4006: you have used up your daily free allocation of 10,000 neurons`）。光了她就靠 `brain.fallback: 'pollinations'` 说话（照样免费、不要 key），
+     只是慢一点点。想彻底不愁只有两条路：**少让她写评论**，或**主人自己上 Cloudflare 付费计划** —— 他不想要付费，别擅自开。
 
 ## 7. ⚠️ 必须提醒主人
 - 宿主（DSH）**重启**才会加载新的评论回复定时器与提示词。不过第三轮实测：主人插件目录一同步，宿主的评论回复链路**看起来已经热重载**成新代码了（旧代码那种「每 5 分钟往同一条评论追一条」的刷屏在同步之后就停了，`待回` 也归零了）。所以重启是**保险**，不是必需。
   - 第六轮又验证了一次这个现象：同步 `lib/tools.js`（11:39 落盘）之后宿主侧**没重启**，但看门鲸重启后大白话链路立刻可用。
   - 第九轮再加一条：**调试台是挂在宿主那份 `lib/tools.js` 上的**，所以要用私信运维台（状态/日志/配置/重启）**宿主必须重启**；
     但看门鲸自己那条链路（大白话支使、自己刷、三连评论）同步 + 重启看门鲸就够了。
-- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第九轮重启后是 pid 6036**）顶着；心跳在 `statePath('watchdog.json')`。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第十轮重启后是 pid 18824**）顶着；心跳在 `statePath('watchdog.json')`。
 - 想让她跑腿，**直接说人话就行**：「搜一下拉康精神分析的视频」「你自己去找点视频看看」「帮我跟金易木木元说声谢谢」
   （斜杠命令 `/搜` `/刷` `/转达` `/帮助` 也还留着，老的用惯了不会失效）。**说「能不能帮我搜…？」也算命令**，不会再被当成请教方法。
   主人名下的片子想一次看几个：**把几个 BV 号一起发给她**（或说「看 5 个××的视频」）；她自己刷有每天 30 个的额度，主人点名的不算。
 - **第七轮起她三连过的视频会顺手留一句评论**（正文自动 @ 两位主人）。想核对「她三连了哪些、评了什么」看
   `logs/actions.log` 里带「三连顺手」的行，和账本 `comments`（`bili_ledger op=list`）。
+- **第十轮起**（m01645 一口气改的五件事）：**陌生人也不再「只回一条」**（`replyDmOthers: 'auto'`，一轮最多招呼 3 位陌生人）；
+  对外动作间隔从 120 秒缩到 **60 秒**（主人侧仍是 5 秒）；**她不再用任何付费模型** —— 回主人私信、回主人评论、写评论、发动态全走免费额度
+  （超额自动兜到 pollinations；`logs/brain.log` 里出现「（付费）」就是有人在偷偷把 `prefer`/`fallback` 改回去了，要立刻查）；
+  **回复主人的评论不再挂 `@` 尾巴**（一级评论的 @ 不受影响，一直好着）。
+- **同一条评论不会云端、本机各回一遍了**：本机每轮巡检**先拉云端账本**再动手，`logs/auto.log` 里出现
+  `cloud pull: 回复 N / 评论 N` 就是它在合并（`logs/cloudsync.log` 里是 `pull ok：并集后回复 N / 评论 N，云端草稿 M 条`）。
+  云端那侧还加了「本机在岗（心跳 15 分钟内）就只待命」的闸，但要 `wrangler deploy` 才生效（§1.11 ⑤、§6 第 9 条）。

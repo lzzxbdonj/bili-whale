@@ -12,6 +12,9 @@
  *   - `pending` —— 待主人点头的草稿；本机与云端都可能排队，合并时按 id 去重。
  *
  * @module sync
+ *
+ * 注意：本模块在仓库里有两份拷贝 —— lib/sync.js 与 cloudflare/src/sync.js
+ * （Worker 打包不能引用仓库外的相对路径）。两份必须**逐字一致**；改一份就一起改另一份。
  */
 
 /** 各集合的去重键：同一个键视为同一条记录。 */
@@ -85,6 +88,9 @@ export function mergeLedger(base, incoming) {
   for (const [name, keyOf] of Object.entries(KEYS)) out[name] = mergeArray(base?.[name], incoming?.[name], keyOf);
   out.replyIndex = mergeCounters(base?.replyIndex, incoming?.replyIndex);
   out.replyThreads = mergeCounters(base?.replyThreads, incoming?.replyThreads);
+  // 消息中心的「已读过」标记也要并过来：云端（趁本机不在时）读过的消息，
+  // 本机接手后不该再当成新消息回一遍（主人 2026-10-05：别一条评论两端都回）。
+  out.msgSeen = mergeCounters(base?.msgSeen, incoming?.msgSeen);
   out.daily = mergeDaily(base?.daily, incoming?.daily);
   out.lastActionTs = Math.max(Number(base?.lastActionTs ?? 0) || 0, Number(incoming?.lastActionTs ?? 0) || 0);
   out.lastActionOwnerTs = Math.max(Number(base?.lastActionOwnerTs ?? 0) || 0, Number(incoming?.lastActionOwnerTs ?? 0) || 0);

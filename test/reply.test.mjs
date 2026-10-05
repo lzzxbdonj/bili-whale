@@ -5,7 +5,8 @@
  *   1. 提示词里没有她自己的原话 / 楼上对话 / 对方是主人还是陌生人 → `buildReplyPrompt`；
  *   2. 只回主人、一轮只回一条、动态下的评论发不出去 → `pickReplyTargets` + `runInboxReplies`；
  *   3. 回复不该每条都挂 @（主人 2026-10-05：「评论不要每一条回复都带上 @」）→ 默认不补尾巴；
- *   4. 回主人要动付费脑子（主人 2026-10-05：「回复主人的时候用付费模型」）→ `prefer: 'paid'`；
+ *   4. **统一用免费模型**（主人 2026-10-05：「统一用免费模型处理」，取代了早些时候的
+ *      「回复主人的时候用付费模型」）→ 不管回谁，`prefer` 都是 `''`；
  *   5. 同一条评论只回一次，**主人也不例外**（2026-10-05 真机：同一 rpid 被追着回了两遍）→ `repliedToComment`。
  *
  * 脑子（模型）不联网：`composeCommentReply` 支持注入 `ask`，这里塞一个假模型。
@@ -103,7 +104,7 @@ function target(over = {}) {
   assert.doesNotMatch(strangerPrompt.user, /UP：/u, '动态没有 UP 行');
 }
 
-// ── 2. 回复不加 @（主人 2026-10-05 的要求）、回主人用付费模型 ──────────────────
+// ── 2. 回复不加 @（主人 2026-10-05 的要求）、统一用免费模型 ────────────────────
 {
   const asked = [];
   const long = '人'.repeat(300);
@@ -119,7 +120,7 @@ function target(over = {}) {
   });
   assert.ok(text.length <= 200, `主人回复不能超过 200 字，实际 ${text.length}`);
   assert.doesNotMatch(text, /@/u, '默认回复不带 @（主人说了：回复评论不用 @）');
-  assert.equal(asked[0].prefer, 'paid', '回主人要用付费那把脑子');
+  assert.equal(asked[0].prefer, '', '统一免费：回主人也不点付费脑子');
 
   // 想恢复老样子：policy.mentionOwnersOnReply = true 时才补尾巴。
   const tailed = await composeCommentReply({
@@ -144,7 +145,7 @@ function target(over = {}) {
   });
   assert.equal(strangerText, '人家只是路过看看～', '陌生人回复不加主人 @');
   assert.doesNotMatch(strangerText, /@/u, '陌生人回复里不该出现 @');
-  assert.equal(asked[1].prefer, '', '回陌生人还是免费模型');
+  assert.equal(asked[1].prefer, '', '回陌生人当然也是免费模型');
 
   const nulled = await composeCommentReply({
     cfg: CFG,

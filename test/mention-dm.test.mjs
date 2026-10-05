@@ -147,7 +147,7 @@ assert.equal(isOwner(cfg, { mid: '391581639', uname: '随便' }), true, '按 UID
 assert.equal(isOwner(cfg, { mid: '1', uname: '金易木木元' }), true, '按昵称也认主人');
 assert.equal(isOwner(cfg, { mid: '1', uname: '路人' }), false);
 
-// checkDmReply：陌生人默认只自动回一条，主人不受这条限制。
+// checkDmReply：陌生人**不再**只回一条（主人 2026-10-05：「陌生人限制取消」），主人也不受限。
 // 注意 ledger 里必须有「对方先发来的」记录（dmIncoming），否则会被「不主动搭话陌生人」拦掉。
 const now = Date.now();
 const stranger = { mid: '1049033797', uname: '我的小千1' };
@@ -161,7 +161,7 @@ const ledger = {
   replyThreads: {},
 };
 const strangerFirst = checkDmReply({ cfg, ledger, mid: stranger.mid, uname: stranger.uname, text: '你好', now });
-assert.equal(strangerFirst.needsConfirm, false, 'replyDmOthers 默认 once：陌生人第一条可以自动回');
+assert.equal(strangerFirst.needsConfirm, false, 'replyDmOthers 默认 auto：陌生人第一条自动回');
 assert.equal(strangerFirst.allowed, true, `陌生人第一条应放行（原因：${strangerFirst.reasons.join('；')}）`);
 const ledgerAfter = {
   ...ledger,
@@ -169,7 +169,11 @@ const ledgerAfter = {
   dms: [{ ...stranger, text: '你好', ts: now - 30_000, isOwner: false, auto: true }],
 };
 const strangerSecond = checkDmReply({ cfg, ledger: ledgerAfter, mid: stranger.mid, uname: stranger.uname, text: '在吗', now });
-assert.equal(strangerSecond.allowed, false, 'replyDmOthers=once：同一个人不回第二条');
+assert.equal(strangerSecond.allowed, true, `replyDmOthers=auto：同一个人来第二条也回（原因：${strangerSecond.reasons.join('；')}）`);
+// 想回到老规矩（陌生人只自动回一条）就把开关拨回 once —— 这条别在重构里弄丢。
+const onceCfg = { ...cfg, policy: { ...cfg.policy, replyDmOthers: 'once' } };
+const strangerOnce = checkDmReply({ cfg: onceCfg, ledger: ledgerAfter, mid: stranger.mid, uname: stranger.uname, text: '在吗', now });
+assert.equal(strangerOnce.allowed, false, 'replyDmOthers=once 时同一个人不回第二条');
 const ownerReply = checkDmReply({ cfg, ledger: ledgerAfter, mid: '3494364865103885', uname: '懒寻真', text: '在吗', now });
 assert.equal(ownerReply.needsConfirm, false, '主人私信不需要点头');
 assert.equal(ownerReply.allowed, true, `主人应放行（原因：${ownerReply.reasons.join('；')}）`);

@@ -289,7 +289,7 @@ async function runScheduled(env) {
   });
   check('B: 刚回完就被「最小间隔」挡住评论（限流生效）', () => {
     assert.equal(patrol.videoComments.queued, 0);
-    assert.ok(patrol.notes.some((note) => note.includes('120 秒')));
+    assert.ok(patrol.notes.some((note) => note.includes('60 秒')));
   });
   check('B: 到点发了每日动态', () => {
     assert.ok(typeof patrol.dynamic.posted === 'string' && patrol.dynamic.posted.length > 0);
@@ -437,6 +437,38 @@ async function runScheduled(env) {
       assert.equal(String(posts[0].type), '17');
     });
   }
+}
+
+// ── 场景 F：本机在岗（心跳新鲜）→ 云端只待命，一个写请求都不发 ───────────────
+{
+  const kv = fakeKV();
+  const log = [];
+  const env = makeEnv(kv, { ...BASE_VARS, OBSERVE_ONLY: 'false' });
+  globalThis.fetch = mockFetch({ nav: navLoggedIn(3), messages: [OWNER_MESSAGE_ITEM], log });
+  // 心跳：本机（看门鲸 / cloud/run.mjs）刚报过到。
+  kv.map.set('state:meta', JSON.stringify({ localSeenAt: Date.now(), cloudSeenAt: 0 }));
+
+  const patrol = await (await call(env, '/patrol', { method: 'POST' })).json();
+  check('F: 本机在岗时云端判定为待命', () => assert.equal(patrol.standby, true));
+  check('F: 待命时不回私信、不排队评论、不发动态', () => {
+    assert.equal(patrol.inbox.replied, 0);
+    assert.equal(patrol.videoComments.queued, 0);
+    assert.equal(patrol.dynamic.posted, null);
+  });
+  check('F: 待命时零写请求', () => {
+    assert.equal(postedTo(log, '/x/v2/reply/add').length, 0);
+    assert.equal(postedTo(log, '/x/dynamic/feed/create/dyn').length, 0);
+  });
+  check('F: 待命原因写进 notes（并提示 force）', () => {
+    assert.ok(patrol.notes.some((note) => note.includes('本机在岗')), `notes=${JSON.stringify(patrol.notes)}`);
+    assert.ok(patrol.notes.some((note) => note.includes('force')), `notes=${JSON.stringify(patrol.notes)}`);
+  });
+
+  const forced = await (await call(env, '/patrol?force=1', { method: 'POST' })).json();
+  check('F: ?force=1 能压过待命闸（主人叫云端干活就真干）', () => {
+    assert.equal(forced.standby, false);
+    assert.equal(forced.inbox.replied, 1);
+  });
 }
 
 console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`);

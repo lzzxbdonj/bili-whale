@@ -494,7 +494,9 @@ export default {
       }
 
       if (path === '/patrol') {
-        const result = await runPatrol(env, { trigger: 'manual', ctx });
+        // 本机在岗时云端默认只待命（别两端抢回同一条评论）；`?force=1` 强制跑。
+        const forced = url.searchParams.get('force') === '1';
+        const result = await runPatrol(env, { trigger: 'manual', ctx, force: forced });
         return json({ ok: true, ...result });
       }
 

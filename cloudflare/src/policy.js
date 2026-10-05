@@ -53,8 +53,13 @@ export const DEFAULTS = {
     replyPerUserWindowHours: 24,
     /** 一轮（一次巡检）最多回几条 —— 别一口气把消息中心刷完。 */
     replyPerRun: 3,
-    /** 一轮里最多回几个陌生人（主人不计入这个额度）。 */
-    replyPerRunOthers: 1,
+    /**
+     * 一轮里最多回几个陌生人（主人不计入这个额度）。
+     *
+     * 主人 2026-10-05：「陌生人限制取消」——从 1 提到跟 `replyPerRun` 一样的 3，
+     * 一轮里陌生人的回复不再被单独卡住（总条数仍受 `replyPerRun` 限制）。
+     */
+    replyPerRunOthers: 3,
     /** 陌生人回复她时要不要理（false = 只回主人）。 */
     replyToOthers: true,
     /** 每日上限。 */
@@ -107,8 +112,11 @@ export const DEFAULTS = {
      * 想只给金易木木元一个人，就填 `['391581639']`。
      */
     debugMids: [],
-    /** 两次对外动作之间的最小间隔（秒）。 */
-    minIntervalSeconds: 120,
+    /**
+     * 两次对外动作之间的最小间隔（秒）。
+     * 主人 2026-10-05：「120 秒间隔改成 60 秒」——从 120 放宽到 60。
+     */
+    minIntervalSeconds: 60,
     /** 回复主人时的最小间隔（秒）——主人优先，允许更勤快。 */
     minIntervalSecondsOwner: 15,
     /**
@@ -148,10 +156,13 @@ export const DEFAULTS = {
     replyDm: 'auto',
     /**
      * 回别人私信的模式：
-     *   `once`（默认）= 只自动回一条，之后闭嘴，要主人点头才继续
-     *   `confirm` = 一条都不自动回；`auto` = 不限；`off` = 彻底不回
+     *   `auto`（默认）= 来一条回一条（仍受 `maxDmReplyPerUserPerDay` 与间隔限制）
+     *   `once` = 只自动回一条，之后闭嘴，要主人点头才继续
+     *   `confirm` = 一条都不自动回；`off` = 彻底不回
+     *
+     * 主人 2026-10-05：「陌生人限制取消」——从 `once` 放开到 `auto`。
      */
-    replyDmOthers: 'once',
+    replyDmOthers: 'auto',
     /** 同一人每天最多被她回几条私信。 */
     maxDmReplyPerUserPerDay: 5,
     /** 收到私信后是否自动回一句寒暄（不调用模型，走模板）。 */
@@ -179,13 +190,18 @@ export const DEFAULTS = {
     baseUrl: '',
     model: '',
     apiKey: '',
-    /** 免费模型没答上来时，悄悄退回主人自己的 key（有 key 才生效）。 */
-    fallback: 'deepseek',
     /**
-     * 「付费那家」是谁：主人 2026-10-05 要求「回复主人的时候用付费模型」——
-     * 回主人时 `askBrain(cfg, { prefer: 'paid' })` 就先用这家（要配好 key，没 key 自然跳过）。
+     * 备用模型：**只兜免费的**（主人 2026-10-05：「统一用免费模型处理」）。
+     * 2026-10-05 实测 Workers AI 的每天 10000 neurons 会被写评论用光（502 / 4006），
+     * 于是兜到 pollinations（同样不要 key、不要钱）；**不要填 deepseek**。
+     * 想「挂了直接说模板话」就留空。
      */
-    paid: 'deepseek',
+    fallback: 'pollinations',
+    /**
+     * 「付费那家」是谁。主人 2026-10-05 改成「统一用免费模型」后**没有付费那家**：
+     * 没人再传 `prefer: 'paid'`，这里留空（填回 deepseek 可恢复）。
+     */
+    paid: '',
     maxTokens: 300,
     /** 0 = 用那家预设的温度（llama 那类模型在 1.3 会胡言乱语，别乱调高）。 */
     temperature: 0,

@@ -40,6 +40,16 @@ import { appendCloudLog, loadState, saveCookies, saveLedger, saveMeta, savePendi
 export const MAX_PENDING = 20;
 
 /**
+ * 本机心跳「新鲜」的窗口：本机在岗时云端**一个写动作都不做**（只读 + 待命）。
+ *
+ * 主人 2026-10-05：「解决一条评论在云端和本地都回的问题」。原来 `runPatrol` 里没有
+ * 任何「本机在不在岗」的判断 —— 手动 `/patrol`、或 Worker 被 cron 喊醒时，云端照样
+ * 去回消息中心，于是和本机看门鲸抢同一条评论。这里跟 `cloudflare/src/index.js` 的
+ * `LOCAL_TTL_MS`（15 分钟）同口径；`force=true`（`POST /patrol?force=1`）可强制跑。
+ */
+const LOCAL_TTL_MS = 15 * 60 * 1000;
+
+/**
  * 主人时区相对 UTC 的偏移（毫秒）。
  * @param timezone - IANA 时区名。
  * @param at - 参考时刻。
@@ -152,8 +162,9 @@ async function pickCandidates(client, cfg, state, limit = 3) {
  * @param options.trigger - 'cron' | 'manual'。
  * @param options.ctx - Worker 执行上下文（可选，用于 waitUntil）。
  * @param options.state - 已经 loadState 过的状态（调用方想省一次读 KV 时传入）。
+ * @param options.force - true = 无视「本机在岗」的待命闸门（手动 `POST /patrol?force=1`）。
  */
-export async function runPatrol(env, { trigger = 'cron', ctx, state: providedState } = {}) {
+export async function runPatrol(env, { trigger = 'cron', ctx, state: providedState, force = false } = {}) {
   const startedAt = Date.now();
   const state = providedState ?? (await loadState(env, { defaults: DEFAULTS }));
   const cfg = state.cfg ?? DEFAULTS;
@@ -174,6 +185,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
     level: null,
     observeOnly: cfg.observeOnly === true,
     canWrite: false,
+    standby: false,
     inbox: { total: 0, replied: 0, skipped: 0, deferred: 0, queued: 0 },
     videoComments: { queued: 0, posted: 0 },
     dynamic: { posted: null, skipped: null },
@@ -209,8 +221,18 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
   }
   if (cfg.observeOnly === true) summary.notes.push('观察模式开着：只读 + 排队，不发任何写请求。');
 
+  // ── 1.5 本机在岗就只待命（主人 2026-10-05：别一条评论两端都回） ──────────────
+  const localSeenAt = Number(state.meta?.localSeenAt ?? 0);
+  const localFresh = localSeenAt > 0 && startedAt - localSeenAt < LOCAL_TTL_MS;
+  const standby = localFresh && force !== true;
+  summary.standby = standby;
+  if (standby) {
+    const minutes = Math.max(0, Math.round((startedAt - localSeenAt) / 60000));
+    summary.notes.push(`本机在岗（心跳 ${minutes} 分钟前）：云端这一轮只待命，回评论 / 评论视频 / 发动态全跳过。要强制跑就 POST /patrol?force=1。`);
+  }
+
   // ── 2. 消息中心 → 自动回复 ──────────────────────────────────────────────────
-  if (summary.loggedIn) {
+  if (summary.loggedIn && standby !== true) {
     try {
       // 「回复我的」和「@我的」是两个接口：只读前者时，主人在评论里 @ 她会毫无反应。
       const feed = await client.msgReplies({ ps: 20 });
@@ -375,7 +397,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
   // ── 3. 视频一级评论（confirm → 排队；auto → 直接发） ────────────────────────
   try {
     const mode = cfg.policy?.postVideoComment ?? 'confirm';
-    if (mode !== 'off') {
+    if (mode !== 'off' && standby !== true) {
       const { picked, notes } = await pickCandidates(client, cfg, state, 3);
       summary.notes.push(...notes.slice(0, 5));
       let queued = 0;
@@ -451,7 +473,9 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
   try {
     const enabled = cfg.dailyDynamic?.enabled === true;
     const mode = cfg.policy?.postDynamic ?? 'auto';
-    if (!enabled) {
+    if (standby === true) {
+      summary.dynamic.skipped = '本机在岗，云端只待命';
+    } else if (!enabled) {
       summary.dynamic.skipped = 'dailyDynamic.enabled = false';
     } else if (mode === 'off') {
       summary.dynamic.skipped = 'postDynamic = off';
@@ -506,6 +530,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
       loggedIn: summary.loggedIn,
       level: summary.level,
       canWrite,
+      standby,
       replied: summary.inbox.replied,
       deferred: summary.inbox.deferred,
       queued: summary.videoComments.queued,
@@ -519,7 +544,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
     summary.errors.push(`落盘：${String(issue?.message ?? issue)}`);
   }
 
-  const line = `patrol(${trigger}) 登录=${summary.loggedIn} 等级=${summary.level ?? '?'} 可写=${canWrite} 回复=${summary.inbox.replied} 待回=${summary.inbox.deferred} 评论草稿=${summary.videoComments.queued} 评论发出=${summary.videoComments.posted} 动态=${summary.dynamic.posted === null ? '未发' : '已发'}${summary.errors.length > 0 ? ` 错误=${summary.errors.length}` : ''}`;
+  const line = `patrol(${trigger}) 登录=${summary.loggedIn} 等级=${summary.level ?? '?'} 可写=${canWrite} 待命=${standby ? '是（本机在岗）' : '否'} 回复=${summary.inbox.replied} 待回=${summary.inbox.deferred} 评论草稿=${summary.videoComments.queued} 评论发出=${summary.videoComments.posted} 动态=${summary.dynamic.posted === null ? '未发' : '已发'}${summary.errors.length > 0 ? ` 错误=${summary.errors.length}` : ''}`;
   try {
     await appendCloudLog(env, line);
   } catch {

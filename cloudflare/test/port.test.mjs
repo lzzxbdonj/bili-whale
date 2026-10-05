@@ -495,8 +495,8 @@ check('主人回复豁免每人一条 / 24 小时窗口（并给出提醒）', (
     targetUname: '懒寻真',
     text: '先回一条',
     isOwner: true,
-    ts: now - 60000,
-    now: new Date(now - 60000),
+    ts: now - 30000,
+    now: new Date(now - 30000),
   });
   const ownerVerdict = checkReply({ cfg, ledger: l, bvid: 'BV1xx', root: 3, message: '主人再理人家一下嘛', toMid: 272770398, toName: '懒寻真', now });
   assert.equal(ownerVerdict.owner, true);
@@ -612,9 +612,9 @@ check('字数上限 + 空内容 + 最小间隔', () => {
   assert.ok(blank.reasons.includes('评论内容为空'), `reasons=${JSON.stringify(blank.reasons)}`);
 
   const now = farFuture();
-  l.lastActionTs = now - 10000; // 10 秒前刚动过，策略要求 120 秒
+  l.lastActionTs = now - 10000; // 10 秒前刚动过，策略默认要求 60 秒（2026-10-05 从 120 秒放宽）
   const interval = checkVideoComment({ cfg, ledger: l, bvid: 'BV1xx', message: '间隔太短', now });
-  assert.ok(interval.reasons.some((r) => r.includes('策略要求至少 120 秒')), `reasons=${JSON.stringify(interval.reasons)}`);
+  assert.ok(interval.reasons.some((r) => r.includes('策略要求至少 60 秒')), `reasons=${JSON.stringify(interval.reasons)}`);
 
   cfg.policy.minIntervalSecondsOwner = 15;
   l.lastActionOwnerTs = now - 10000;
