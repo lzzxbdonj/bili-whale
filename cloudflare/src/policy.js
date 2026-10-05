@@ -206,8 +206,15 @@ export const DEFAULTS = {
   feed: {
     /** 默认刷的源，按顺序取。 */
     sources: ['rcmd', 'popular', 'ranking'],
-    /** 命中这些词的视频直接跳过。 */
+    /** 命中这些词的视频直接跳过（老的排除词，跟 titleBlock 一起生效）。 */
     excludeKeywords: ['广告', '带货'],
+    /** 标题黑名单：擦边/八卦/暴富/引流这类片子不评论（服务端要看得见的口碑）。 */
+    titleBlock: [],
+    /** true = 只评论「像学习内容」的片子（话题词见 policy.topicKeywords）。默认关，
+     *  免得把「刷视频」窄成「只刷学习区」；擦边垃圾由 titleBlock 挡。 */
+    topicsOnly: false,
+    /** 自定义话题词；留空用 policy 里的默认表。 */
+    topicKeywords: [],
     /** 首页推荐单次拉取条数。 */
     ps: 12,
   },
@@ -231,6 +238,49 @@ export const DEFAULTS = {
 function hitBlocked(text, words) {
   const list = Array.isArray(words) ? words : [];
   return list.find((word) => typeof word === 'string' && word !== '' && text.includes(word)) ?? null;
+}
+
+/**
+ * 标题黑名单：这些片**不评论**。
+ *
+ * 由来（2026-10-05）：待确认箱里混进了「女大学生的"隐秘的圈子"一月疯狂约600人」这类
+ * 擦边垃圾 —— patrol 从 popular/ranking 里挑片时只看播放量，没有任何内容把关，
+ * 排进草稿的文案还是照着人格写的，等于拿她的账号去这种视频底下发言。
+ * 与 lib/policy.js 的 DEFAULT_TITLE_BLOCK 保持一致。
+ */
+export const DEFAULT_TITLE_BLOCK = [
+  '擦边', '福利', '美女', '性感', '诱惑', '私密', '隐秘', '约炮', '约600', '一晚赚',
+  '出轨', '渣男', '渣女', '前任', '恋情', '绯闻', '八卦', '吃瓜', '狗血', '撕逼',
+  '暴富', '一夜暴富', '赚上万', '日入', '月入过万', '副业', '割韭菜', '引流', '加微信',
+  '带货', '开箱', '优惠券', '拼多多', '广告', '推广', '三连必回', '关注必回',
+  '震惊', '不看后悔', '慎入', '未成年人', '擦边球', '偷拍',
+];
+
+/** 学习向账号只在这些话题里发言（`feed.topicsOnly` 打开时生效）。定宽一点，别把主人等成「怎么没评论」。 */
+export const DEFAULT_TOPIC_KEYWORDS = [
+  '学习', '记忆', '笔记', '复习', '考试', '考研', '高考', '读书', '效率', '方法论',
+  '数学', '物理', '化学', '生物', '地理', '天文', '宇宙', '相对论', '量子', '力学', '电路', '电子', '机械', '工程',
+  '编程', '代码', '算法', '数据结构', '前端', '后端', '数据库', '操作系统', '网络', '安全', '开源', '软件', '工具', '教程',
+  'AI', 'ai', '人工智能', '大模型', '模型', 'agent', 'Agent', 'LLM', '机器学习', '深度学习', '神经网络', '提示词',
+  '科学', '科普', '知识', '原理', '逻辑', '思维', '哲学', '心理', '历史', '经济', '金融', '统计', '实验', '研究', '论文',
+  '英语', '语言', '写作', '演讲', '设计', '摄影', '剪辑', '音乐', '美术',
+];
+
+/** 标题/标签命中黑名单？返回命中的那个词，没命中返回 null。 */
+export function titleBlocked(cfg, title, tags = []) {
+  const list = Array.isArray(cfg?.feed?.titleBlock) ? cfg.feed.titleBlock : DEFAULT_TITLE_BLOCK;
+  const blob = `${String(title ?? '')} ${Array.isArray(tags) ? tags.join(' ') : ''}`;
+  return hitBlocked(blob, list);
+}
+
+/** 这条片子「在我们想聊的话题里」吗？（topicsOnly=false 时一律 true，只靠黑名单把关） */
+export function titleOnTopic(cfg, title, tags = []) {
+  if (cfg?.feed?.topicsOnly !== true) return true;
+  const list = Array.isArray(cfg?.feed?.topicKeywords) && cfg.feed.topicKeywords.length > 0
+    ? cfg.feed.topicKeywords
+    : DEFAULT_TOPIC_KEYWORDS;
+  const blob = `${String(title ?? '')} ${Array.isArray(tags) ? tags.join(' ') : ''}`.toLowerCase();
+  return list.some((word) => typeof word === 'string' && word !== '' && blob.includes(String(word).toLowerCase()));
 }
 
 /** 通用：动作之间的最小间隔。 */

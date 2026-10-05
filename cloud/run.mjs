@@ -156,7 +156,7 @@ async function replyOwners(run, { cfg }) {
 /** 挑视频 → 写评论：默认 confirm 时只排队，等遥控台点头。 */
 async function patrolComments(run, { cfg, pending }) {
   const { composeVideoComment } = await import('../lib/compose.js');
-  const { checkVideoComment } = await import('../lib/policy.js');
+  const { checkVideoComment, titleBlocked, titleOnTopic } = await import('../lib/policy.js');
   const { loadLedger, commentedVideo } = await import('../lib/ledger.js');
   const ledger = loadLedger();
   const sources = cfg.feed?.sources ?? ['popular'];
@@ -183,6 +183,17 @@ async function patrolComments(run, { cfg, pending }) {
         continue;
       }
       if (pending.some((draft) => draft.bvid === item.bvid)) continue;
+      // 内容把关（跟 Worker 侧同一张词表）：擦边/八卦/暴富这类标题一律不评论；
+      // 不在话题里的也不评论（feed.topicsOnly）。以前只看播放量，待确认箱里出现过擦边垃圾。
+      const banned = titleBlocked(cfg, title, item.tags ?? []);
+      if (banned !== null) {
+        summary.push(`跳过《${title.slice(0, 24)}》：标题黑名单「${banned}」`);
+        continue;
+      }
+      if (!titleOnTopic(cfg, title, item.tags ?? [])) {
+        summary.push(`跳过《${title.slice(0, 24)}》：不在话题范围（feed.topicsOnly）`);
+        continue;
+      }
       // 一轮只挑一个视频，避免待确认箱被塞满。
       const video = await run('bili_video', { id: item.bvid, comments: 8 });
       const message = await composeVideoComment({ cfg, video, topComments: video?.hotComments ?? [] });

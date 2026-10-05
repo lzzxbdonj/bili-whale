@@ -234,7 +234,18 @@ async function runScheduled(env) {
   });
 
   const approve = await call(env, '/approve', { method: 'POST', body: { id: pending.pending[0].id } });
-  check('A: 观察模式下点头也被拦（409）', () => assert.equal(approve.status, 409));
+  // 观察模式约束的是**云端自己**：主人显式点头后，草稿只做标记，真发交给本机/GitHub 手脚。
+  // 曾经的 bug：这里被 409 拦死，主人点了半天 approve，草稿永远 approved:false，评论一条都发不出去。
+  check('A: 观察模式不影响主人点头（200 + 标记 approved）', () => assert.equal(approve.status, 200));
+  {
+    const after = await (await call(env, '/pending')).json();
+    check('A: 点头后草稿 approved=true 且仍未发出', () => {
+      const draft = after.pending.find((item) => item.id === pending.pending[0].id);
+      assert.equal(draft?.approved, true);
+      assert.notEqual(draft?.posted, true);
+      assert.equal(postedTo(log, '/x/v2/reply/add').length, 0);
+    });
+  }
 
   const dynamic = await call(env, '/dynamic', { method: 'POST', body: { text: '测试动态' } });
   check('A: 观察模式下发动态被拦（409）', () => assert.equal(dynamic.status, 409));

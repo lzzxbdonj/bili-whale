@@ -599,10 +599,23 @@ export class BiliClient {
    * @param options.parent - 被回复评论的 rpid（回复时给）。
    * @param options.bvid - 仅用于 Referer。
    */
-  async commentAdd({ aid, message, root, parent, bvid }) {
+  /**
+   * 发一条评论。`mentions` 里的 `@昵称` 会随 `at_name_to_mid` 交给服务端，
+   * 这样评论区的 @ 才是**真 @**（对方能收到通知）——跟 lib/api.js 同一份实测结论。
+   */
+  async commentAdd({ aid, message, root, parent, bvid, mentions = [] }) {
     const form = { type: 1, oid: String(aid), message, plat: 1, csrf: this.csrf() };
     if (root !== undefined && root !== null) form.root = String(root);
     if (parent !== undefined && parent !== null) form.parent = String(parent);
+    const nameToMid = {};
+    for (const item of Array.isArray(mentions) ? mentions : []) {
+      const name = String(item?.name ?? '');
+      const mid = item?.mid;
+      if (name === '' || mid === undefined || mid === null || String(mid) === '') continue;
+      if (!String(message).includes(`@${name}`)) continue;
+      nameToMid[name] = String(mid);
+    }
+    if (Object.keys(nameToMid).length > 0) form.at_name_to_mid = JSON.stringify(nameToMid);
     const body = await this.request('/x/v2/reply/add', {
       method: 'POST',
       form,

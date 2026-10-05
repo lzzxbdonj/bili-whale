@@ -513,18 +513,19 @@ export default {
         if (id === '') return fail('需要 id');
         const draft = state.pending.find((item) => item.id === id);
         if (draft === undefined) return fail(`队列里没有 id=${id} 的草稿`, 404);
-        // 观察模式：连标记都不做，免得手脚拿到 approved 就真发出去。
-        if (state.cfg.observeOnly === true) {
-          return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再点头。', 409);
-        }
         // 只标记「主人点头了」。真发由手脚来做（本机在线就是本机，关机就是 GitHub Actions）：
         // Cloudflare 的出口 IP 被 B 站 -412 拦死，Worker 自己发不出去。
+        //
+        // 这里**故意不看 observeOnly**（踩过的坑：云端 OBSERVE_ONLY=true 时 /approve 直接 409，
+        // 主人点了头也发不出去，看起来就是「评论一个都没发出去」）。
+        // 观察模式约束的是**云端自己**别发写请求；主人显式点头之后的发送由本机的手脚执行，
+        // 本机有自己的 policy 把关（observeOnly 也是本机 policy 的一环）。
         draft.approved = true;
         draft.approvedAt = new Date().toISOString();
         await savePending(env, state.pending);
         await appendCloudLog(env, `draft approved（等手脚发送）：${draft.bvid}`);
         const dispatched = await dispatchHands(env, 'patrol');
-        return json({ ok: true, id, bvid: draft.bvid, approved: true, dispatched });
+        return json({ ok: true, id, bvid: draft.bvid, approved: true, dispatched, observeOnly: state.cfg.observeOnly === true });
       }
 
       if (path === '/reply') {
@@ -619,7 +620,7 @@ async function handleComment(env, state, ctx, request) {
     await flush();
     return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再发。', 409);
   }
-  const created = await client.commentAdd({ aid: video.aid, bvid, message });
+  const created = await client.commentAdd({ aid: video.aid, bvid, message, mentions: ownerMentionList(state.cfg) });
   await flush();
   const clock = policyClock(state.cfg);
   recordComment(state.ledger, { bvid, aid: video.aid, rpid: created?.rpid ?? null, text: message, ts: clock.ts, now: clock.date });
@@ -658,7 +659,7 @@ async function handleReply(env, state, ctx, request) {
     await flush();
     return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再发。', 409);
   }
-  const created = await client.commentAdd({ aid: video.aid, bvid, message, root: root || undefined, parent: body.parent ?? undefined });
+  const created = await client.commentAdd({ aid: video.aid, bvid, message, root: root || undefined, parent: body.parent ?? undefined, mentions: ownerMentionList(state.cfg) });
   await flush();
   const clock = policyClock(state.cfg);
   // 手动回复也要记账：否则「每人每条串只回一条」与当日配额都看不见它，

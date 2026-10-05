@@ -20,7 +20,7 @@
  */
 
 import { BiliClient, BiliError } from './bili.js';
-import { DEFAULTS, checkDynamic, checkReply, checkVideoComment, isOwnerTarget, ownerMentionList } from './policy.js';
+import { DEFAULTS, checkDynamic, checkReply, checkVideoComment, isOwnerTarget, ownerMentionList, titleBlocked, titleOnTopic } from './policy.js';
 import {
   commentedVideo,
   createLedger,
@@ -122,6 +122,17 @@ async function pickCandidates(client, cfg, state, limit = 3) {
         const excluded = hitsExclude(video, cfg);
         if (excluded !== null) {
           notes.push(`跳过《${String(video.title ?? '').slice(0, 24)}》：命中排除词「${excluded}」`);
+          continue;
+        }
+        // 内容把关（2026-10-05 起）：擦边/八卦/暴富这类标题一律不评论，
+        // 不在话题里的也不评论 —— 以前只看播放量，待确认箱里因此出现过擦边垃圾。
+        const banned = titleBlocked(cfg, video.title, video.tags ?? []);
+        if (banned !== null) {
+          notes.push(`跳过《${String(video.title ?? '').slice(0, 24)}》：标题黑名单「${banned}」`);
+          continue;
+        }
+        if (!titleOnTopic(cfg, video.title, video.tags ?? [])) {
+          notes.push(`跳过《${String(video.title ?? '').slice(0, 24)}》：不在话题范围（feed.topicsOnly）`);
           continue;
         }
         if (picked.some((item) => item.bvid === video.bvid)) continue;
@@ -263,6 +274,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
             message: draft,
             root: verdict.rootRpid,
             parent: item.rpid,
+            mentions: ownerMentionList(cfg),
           });
           const selfRpid = created?.rpid ?? null;
           recordReply(ledger, {
@@ -331,9 +343,28 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
           summary.notes.push(`不评论《${String(video.title ?? '').slice(0, 24)}》：${verdict.reasons[0] ?? '策略拦下'}`);
           continue;
         }
-        if (!canWrite) continue;
+        // auto 模式但云端自己发不出去（观察模式 / 出口 IP 被 -412 拦 / 未转正）：
+        // 也要把草稿**标成已同意**交给手脚（本机在线是本机，关机是 GitHub Actions）。
+        // 踩过的坑：这里以前直接 `continue`，于是 auto 模式下既没草稿也没评论，
+        // 主人看到的就是「怎么没刷视频/一条评论都没有」。
+        if (!canWrite) {
+          enqueueDraft(state, {
+            bvid: video.bvid,
+            aid: video.aid ?? null,
+            title: video.title ?? '',
+            upName: video.author ?? '',
+            message: draft,
+            source: `patrol:${video.source ?? 'feed'}`,
+            approved: true,
+            approvedAt: new Date().toISOString(),
+            approvedBy: 'policy:auto',
+          });
+          summary.videoComments.queued += 1;
+          summary.notes.push(`《${String(video.title ?? '').slice(0, 24)}》按 auto 策略排队，等手脚发送（云端发不出去）`);
+          break;
+        }
         const detail = video.aid !== undefined && video.aid !== null ? video : await client.video(video.bvid);
-        const created = await client.commentAdd({ aid: detail.aid, bvid: video.bvid, message: draft });
+        const created = await client.commentAdd({ aid: detail.aid, bvid: video.bvid, message: draft, mentions: ownerMentionList(cfg) });
         recordComment(ledger, {
           bvid: video.bvid,
           aid: detail.aid,

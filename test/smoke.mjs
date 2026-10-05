@@ -14,14 +14,20 @@ import { apply, msUntilNext, name, inject } from '../lib/index.js';
 const registered = [];
 const ctx = {
   tools: { register: (definition) => { registered.push(definition); return () => {}; } },
-  setTimeout: (fn, delay) => setTimeout(fn, delay),
-  clearTimeout: (id) => clearTimeout(id),
+  // 真宿主里定时器只能从注入的 timer 服务拿（deprecated 别名 ctx.setTimeout 在没 inject 时
+  // 连 typeof 都会抛 `cannot get property "timer" without inject`，2026-10-05 的定时器事故）。
+  timeout: (fn, delay) => setTimeout(fn, delay),
+  interval: (fn, delay) => setInterval(fn, delay),
   on: (event, handler) => { if (event === 'dispose') ctx._dispose = handler; },
 };
 
 assert.equal(typeof apply, 'function', 'apply 必须是函数');
 assert.equal(name, 'biliwhale', 'name 必须与 cordis.patch.yml 的行 id 一致');
-assert.deepEqual(inject, ['tools'], 'inject 必须声明 tools 服务');
+assert.deepEqual(
+  [...inject].sort(),
+  ['timer', 'tools'],
+  'inject 必须同时声明 tools 与 timer（定时器服务）',
+);
 
 apply(ctx, {});
 
