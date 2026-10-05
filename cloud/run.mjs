@@ -70,6 +70,11 @@ async function panel(path, { method = 'GET', body } = {}) {
 async function pullState() {
   const state = await panel('/state');
   const cookies = { ...(state.cookies ?? {}) };
+  // 云端 IP 跟本机不是同一个：带着本机的 buvid 指纹去请求，风控会甩 -352。
+  // 只留登录凭据（SESSDATA / bili_jct / DedeUserID），让 ensureBuvid() 用这台机器的 IP 现领一份指纹。
+  for (const key of ['buvid3', 'buvid4', 'b_nut', 'b_lsid', 'buvid_fp', '_uuid', 'bili_ticket', 'bili_ticket_expires']) {
+    delete cookies[key];
+  }
   if (Object.keys(cookies).length === 0 && process.env.BILI_COOKIES) {
     const seed = JSON.parse(process.env.BILI_COOKIES);
     Object.assign(cookies, seed?.cookies ?? seed);
@@ -168,10 +173,14 @@ async function patrolComments(run, { cfg, pending }) {
       summary.push(`源 ${source} 拉取失败：${String(issue?.message ?? issue).slice(0, 80)}`);
       continue;
     }
+    let seen = 0;
     for (const item of items) {
       const title = String(item.title ?? '');
       if (title === '' || exclude.some((word) => title.includes(word))) continue;
-      if (commentedVideo(ledger, item.bvid) === true) continue;
+      if (commentedVideo(ledger, item.bvid) === true) {
+        seen += 1;
+        continue;
+      }
       if (pending.some((draft) => draft.bvid === item.bvid)) continue;
       // 一轮只挑一个视频，避免待确认箱被塞满。
       const video = await run('bili_video', { id: item.bvid, comments: 8 });
@@ -201,6 +210,7 @@ async function patrolComments(run, { cfg, pending }) {
       }
       summary.push(`跳过 ${item.bvid}：${(verdict.reasons ?? []).join('；').slice(0, 80)}`);
     }
+    summary.push(`源 ${source}：${items.length} 条（已看过 ${seen} 条）`);
   }
   return { queued, posted, note: '这轮没有合适的视频' };
 }
