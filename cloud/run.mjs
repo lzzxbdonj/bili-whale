@@ -168,7 +168,8 @@ async function patrolComments(run, { cfg, pending }) {
     let items = [];
     try {
       const feed = await run('bili_feed', { source, count: 12 });
-      items = feed?.items ?? [];
+      // 注意：bili_feed 工具返回的是 { source, videos, notes }，字段名是 videos 不是 items。
+      items = feed?.videos ?? feed?.items ?? [];
     } catch (issue) {
       summary.push(`源 ${source} 拉取失败：${String(issue?.message ?? issue).slice(0, 80)}`);
       continue;
