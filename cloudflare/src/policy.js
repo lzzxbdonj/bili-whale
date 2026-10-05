@@ -94,6 +94,19 @@ export const DEFAULTS = {
      * 命令走代码才办得成（见 `lib/dmcmd.js`）；设 false 就退回「只陪聊」。
      */
     dmCommands: true,
+    /**
+     * 主人的「最高权限」（调试档）：私信里能查状态 / 日志 / 配置 / 额度 / 最近动作，
+     * 能改配置，能让看门鲸重启；他们支使的动作**免限额 / 免间隔 / 免去重**。
+     *
+     * 主人 2026-10-05：「给另一个主人调试最高权限」。设 false = 退回普通主人
+     * （只能聊天 + `/搜` `/刷` `/转达` 那三件事）。
+     */
+    ownerDebug: true,
+    /**
+     * 只给名单里的 UID「最高权限」（空数组 = 两位主人都有）。
+     * 想只给金易木木元一个人，就填 `['391581639']`。
+     */
+    debugMids: [],
     /** 两次对外动作之间的最小间隔（秒）。 */
     minIntervalSeconds: 120,
     /** 回复主人时的最小间隔（秒）——主人优先，允许更勤快。 */
@@ -236,6 +249,13 @@ export const DEFAULTS = {
     ],
     /** 每轮最多挑几个视频来「学」（多了会变成刷屏）。 */
     perRun: 2,
+    /**
+     * 每天**自己刷**（含学习轮、随手刷）最多几条；主人点名要她看的（`source = 'master'`）
+     * 不计入、也不受这条限制。**0 = 不限**。
+     *
+     * 主人 2026-10-05：「每天刷 30 个视频，主人让其刷的不计入」。
+     */
+    dailyWatch: 30,
     /** 本机插件在的时候，每隔多少分钟自己学一轮（云端 Actions 另有 10 分钟巡检）。 */
     checkMinutes: 60,
     /** 挑视频时优先用的源：search（按 topics 搜）/ popular / ranking。 */
@@ -426,7 +446,7 @@ export function ownerMentionList(cfg) {
  * @param options.now - 当前时间戳（毫秒，测试可注入）。
  * @returns {{allowed: boolean, needsConfirm: boolean, mode: string, reasons: string[], warnings: string[], message: string, hint: string}}
  */
-export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false, now = Date.now(), ignoreInterval = false }) {
+export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false, now = Date.now(), ignoreInterval = false, force = false }) {
   const mode = cfg.policy.postVideoComment;
   const reasons = [];
   const warnings = [];
@@ -439,16 +459,16 @@ export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false,
   }
   const blocked = hitBlocked(text, cfg.policy.blockKeywords);
   if (blocked !== null) reasons.push(`命中屏蔽词「${blocked}」`);
-  if (cfg.policy.dedupePerVideo === true && bvid && commentedVideo(ledger, bvid) !== null) {
+  if (force !== true && cfg.policy.dedupePerVideo === true && bvid && commentedVideo(ledger, bvid) !== null) {
     reasons.push(`这个视频（${bvid}）已经评论过了`);
   }
   // 每日上限：**0 = 不限**（跟 dailyTriples / dailyRepliesOwner 一个规矩）。
   // 主人 2026-10-05：「三连的视频都要评论」——默认 3 会把当天第 4 条起的评论全挡掉。
   const limit = Number(cfg.policy.dailyVideoComments);
-  if (limit > 0 && counts.videoComments >= limit) {
+  if (force !== true && limit > 0 && counts.videoComments >= limit) {
     reasons.push(`今日视频评论已达上限 ${limit} 条`);
   }
-  if (ignoreInterval !== true) {
+  if (ignoreInterval !== true && force !== true) {
     const interval = intervalOk(cfg, ledger, now, false);
     if (!interval.ok) reasons.push(interval.reason);
   }
@@ -564,7 +584,7 @@ export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toNa
  *   - 每天最多 `policy.dailyTriples` 个；
  *   - 标题命中黑名单不三连（不给擦边垃圾捧场）。
  */
-export function checkTriple({ cfg, ledger, video, score = 0, confirm = false, now = Date.now() }) {
+export function checkTriple({ cfg, ledger, video, score = 0, confirm = false, now = Date.now(), force = false }) {
   const mode = cfg?.policy?.postTriple ?? 'confirm';
   const aid = Number(video?.aid ?? 0);
   const title = String(video?.title ?? '');
@@ -577,9 +597,9 @@ export function checkTriple({ cfg, ledger, video, score = 0, confirm = false, no
     const blocked = titleBlocked(cfg, title, video?.tags ?? []);
     if (blocked !== null) reasons.push(`标题命中黑名单「${blocked}」，不三连`);
   }
-  if (aid > 0 && tripledAlready(ledger, aid)) reasons.push(`这个视频（aid=${aid}）已经三连过了`);
+  if (force !== true && aid > 0 && tripledAlready(ledger, aid)) reasons.push(`这个视频（aid=${aid}）已经三连过了`);
   const limit = Number(cfg?.policy?.dailyTriples ?? 5);
-  if (limit > 0 && tripleCountToday(ledger, new Date(now)) >= limit) reasons.push(`今日三连已达上限 ${limit} 个`);
+  if (force !== true && limit > 0 && tripleCountToday(ledger, new Date(now)) >= limit) reasons.push(`今日三连已达上限 ${limit} 个`);
   const needsConfirm = mode === 'confirm' && confirm !== true;
   return {
     allowed: reasons.length === 0 && !needsConfirm,

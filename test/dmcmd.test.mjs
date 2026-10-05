@@ -16,7 +16,7 @@
 import { strict as assert } from 'node:assert';
 import { dmCommandHelp, parseDmCommand, runDmCommand, runDmIntent } from '../lib/dmcmd.js';
 import { looksLikeActionRequest, parseIntent } from '../lib/intent.js';
-import { emptyLedger } from '../lib/ledger.js';
+import { emptyLedger, recordWatched, selfWatchedToday } from '../lib/ledger.js';
 
 const OWNER_A = 3494364865103885; // 懒寻真
 const OWNER_B = 391581639; // 金易木木元
@@ -378,4 +378,47 @@ const SEARCH_HITS = [
   assert.equal(slash.calls[0].keyword, '拉康');
 }
 
-console.log('✓ 私信测试通过：斜杠命令照旧、大白话也认（搜/自己刷/点名刷/转达）、否定句与问方法一律不动手、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、认不出就不猜');
+// ── 9. 第九轮：一次看多个 / 自己刷有上限（主人 2026-10-05）───────────────────
+{
+  // 9.1 一条私信里写三个 BV 号 → 三条全看（主人：「主人让它看的要看」）
+  const THREE = 'BV1X38BzWEBn BV1BZtC68EXq BV1Ff4y1h7zY';
+  const parsedMulti = parseIntent(`帮我看看 ${THREE}`);
+  assert.equal(parsedMulti?.name, 'watch');
+  assert.deepEqual(parsedMulti?.targets, ['BV1X38BzWEBn', 'BV1BZtC68EXq', 'BV1Ff4y1h7zY'], `三个 BV 号要全认出来（实际：${JSON.stringify(parsedMulti?.targets)}）`);
+  const multi = fakeClient();
+  const ledMulti = emptyLedger();
+  const outMulti = await runDmIntent({
+    cfg: { ...CFG, policy: { ...CFG.policy, postTriple: 'off' } },
+    ledger: ledMulti,
+    client: multi.client,
+    mid: OWNER_A,
+    uname: '懒寻真',
+    text: `帮我看看 ${THREE}`,
+  });
+  assert.equal(outMulti.ok, true, `三个 BV 号要刷得动（实际：${outMulti.text}）`);
+  assert.equal(multi.calls.filter((c) => c.path === 'video').length, 3, '三个 BV 号要真拉三次详情');
+  assert.equal(ledMulti.watched.length, 3, '三条都要留痕');
+  assert.ok(outMulti.text.includes('刷了 3 个'), `回执要说清刷了几个（实际：${outMulti.text}）`);
+
+  // 9.2 个数能到十（原来夹在 1..5），但也不许无限拉
+  assert.equal(parseIntent('看 8 个拉康的视频')?.count, 8, '主人说八个就是八个');
+  assert.equal(parseIntent('看 20 个拉康的视频')?.count, 10, '再大也只认到 10，别一次拉一百条');
+
+  // 9.3 她自己刷有每日上限（learning.dailyWatch）；主人点名的**不计数也不受限**
+  const ledCap = emptyLedger();
+  recordWatched(ledCap, { bvid: 'BV1atCRYsE7x', source: 'study' });
+  recordWatched(ledCap, { bvid: 'BV1fY411J7wD', source: 'self' });
+  const capCfg = { ...CFG, policy: { ...CFG.policy, postTriple: 'off' }, learning: { enabled: true, dailyWatch: 2 } };
+  const capped = fakeClient({ searchResult: SEARCH_HITS });
+  const outCapped = await runDmIntent({ cfg: capCfg, ledger: ledCap, client: capped.client, mid: OWNER_A, uname: '懒寻真', text: '你自己去找点视频看看' });
+  assert.equal(outCapped.ok, false, '自己刷的额度用完就别再自己挑了（主人：「不要一味的自己刷视频」）');
+  assert.ok(outCapped.text.includes('上限'), `要说清是额度问题（实际：${outCapped.text}）`);
+  assert.equal(capped.calls.length, 0, '额度满了不该再打 B 站接口');
+  const named = fakeClient();
+  const outNamed = await runDmIntent({ cfg: capCfg, ledger: ledCap, client: named.client, mid: OWNER_A, uname: '懒寻真', text: '看看 BV1X38BzWEBn' });
+  assert.equal(outNamed.ok, true, '主人点名的片子不受她自己额度限制');
+  assert.equal(ledCap.watched.at(-1).source, 'master', '主人点名的要标 master');
+  assert.equal(selfWatchedToday(ledCap).length, 2, '额度只数自己刷的：master 那条不算');
+}
+
+console.log('✓ 私信测试通过：斜杠命令照旧、大白话也认（搜/自己刷/点名刷/转达）、否定句与问方法一律不动手、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、认不出就不猜、一条私信多个 BV 号全看、自己刷有每日上限而主人点名的不算');

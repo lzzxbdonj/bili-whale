@@ -1,4 +1,4 @@
-# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第七轮：三连顺手评论已上线** —— 看 §1.9，上一轮看 §1.8）
+# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第九轮：多视频 / 自己刷有额度 / 另一位主人最高权限** —— 看 §1.10，上一轮看 §1.9）
 
 > 给接手的会话：这份文件是唯一权威的交接说明。仓库 **`E:\donk\dsh-bilibili-whale`**（git 分支 `master`），
 > 宿主插件装在 **`C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale`**，
@@ -6,7 +6,9 @@
 >
 > **上一轮交接里「还没做的事」①–⑦ 已全部做完，另外查出并修掉了两个真 bug。** 见 §3。
 > **第六轮**：私信不再要求斜杠命令 —— 主人说人话她就当场办（§1.8）；云端付费脑子到底怎么配也写在 §1.8。
-> **第七轮**（最新）：**三连的视频都会顺手评论**（§1.9）、私信每日上限全关（§1.9 ①）、顺手修掉「和」字被当成转达动词的误判。
+> **第七轮**：**三连的视频都会顺手评论**（§1.9）、私信每日上限全关（§1.9 ①）、顺手修掉「和」字被当成转达动词的误判。
+> **第九轮**（最新）：一条私信能看**多个** BV 号且主人点名的片子不受额度限制（§1.10 ①）、她自己刷有**每天 30 个**的上限
+> （§1.10 ②）、另一位主人拿到**调试最高权限**（私信运维台 + 免限额免间隔 + 远程重启，§1.10 ③）。
 
 ## 1. 主人的诉求（原话）
 - m04637：「完善一下评论回复」。
@@ -234,6 +236,64 @@
 旧的四处 `tripleVideo` 调用补 `commentOnTriple: false`（旧断言要求「调用序列恰好等于那 5 个接口」）。**八套仍全绿**。
 
 
+### 1.10 第九轮：一次能看多个 / 不要一味自己刷 / 另一个主人最高权限
+主人原话（本轮入口）：「让他一次能看多个视频，不要一味的自己刷视频，给另一个主人调试最高权限」。
+
+**① 一次能看多个视频（主人名下的片子要真看 —— `lib/intent.js` + `lib/dmcmd.js`）**
+- 一条私信里写多个 BV 号全认：`lib/intent.js` 新增 `extractIds()`（抠 `BV[0-9A-Za-z]{10}` / `av\d+`、去重、最多 10 个）；
+  `parseIntent` 只要认出 BV 号就走 watch，`targets` 带着整串，`count = max(ids.length, 口述个数)`。
+- `lib/dmcmd.js` 的 `runWatch()` 新增 `ids` 分支：`explicit.length > 0` 就**挨个** `client.video(id)`（以前只拉第一个）。
+- 口述个数上限从 1..5 放宽到 **1..10**（`countFromText` 认到「十」）。
+- 回执长度上限在 `watchThese` / `runWatchSelf` 放宽到 `Math.max(maxCommentChars, 400)` —— 一次好几个视频的回执才装得下。
+- **真机验证**（真 client，`postTriple:'off'` 只为不真三连）：一条私信三个 BV → 三条全拉、三条都真的报了浏览记录，回执
+  `刷了 3 个：BV1CvhH62ERx｜…｜进历史✓｜热评3 / BV1JXHp6QENU｜… / BV1nL41147E6｜…`。
+
+**② 不要一味自己刷视频（新键 `learning.dailyWatch: 30`）**
+- 语义（主人勾的）：「每天刷 30 个视频，**主人让其刷的不计入**」。
+- `lib/ledger.js` 新增 `selfWatchedToday(ledger)` = `todayWatched()` 里 `source !== 'master'` 的那些 ——
+  主人点名走的正是 `source='master'`，所以既不计入额度、也不受额度限制。
+- 卡口两处：`lib/dmcmd.js` 的 `runWatchSelf()`（自己刷之前先看额度，满了回
+  「人家今天自己已经刷了 N 个啦（自己刷的上限是每天 M 个）…主人点的片子不算在这个上限里」）与
+  `lib/study.js` 的 `learnOnce()`（学习轮直接 `skipped`）；还剩几个就少刷几个（`want = min(want, remain)`）。
+- ⚠️ **坑（测试逮到的真 bug）**：`studyConfig()` 是**白名单**式返回，光在 `lib/config.js` 的 DEFAULTS 里加 `dailyWatch` 没用 ——
+  `studyConfig(cfg).dailyWatch` 是 `undefined`，额度永远不触发。必须**同时**加到 `lib/study.js` 的 `studyConfig()` 返回里
+  （`dailyWatch: Math.max(0, Number(raw.dailyWatch ?? 30))`）。以后再加 `learning.*` 的新键，请照这个「双改」检查。
+- 云端镜像：`cloudflare/src/policy.js` 的 DEFAULTS 同步加了 `learning.dailyWatch`（`port.test.mjs` 逐字比对）。
+
+**③ 给另一个主人（金易木木元）调试最高权限（新模块 `lib/debug.js`）**
+- 主人勾的三件事：私信里的运维命令（状态/日志/配置/额度/最近动作）、免限额免间隔（他说的动作立刻办、不限次数、跳过去重）、
+  能远程让她重启看门鲸 / 改她的配置。
+- **谁能用**：`policy.ownerDebug: true`（总开关）+ `policy.debugMids: []`（空 = 两位主人都有；只想给一位就填 `['391581639']`）。
+  判定在 `lib/policy.js` 的 `isDebugOwner(cfg, { mid, uname })`。
+- **命令**（全在 `lib/debug.js`，纯确定性解析，一个模型调用都没有）：
+  `状态` / `日志 [actions|brain|study|cloudsync|auto|dm-watch]` / `配置 [路径]` /
+  `改配置 policy.x 8`（也认「把 policy.minIntervalSeconds 改成 0」）/ `额度` / `最近` / `重启`。
+- **安全线**：日志走白名单 `DEBUG_LOGS`；键名带 key/token/secret/cookie/password/sessdata/jct/credential 的一律隐藏且不许改；
+  `改配置` 拒绝 `__proto__`/`prototype`/`constructor`；只写用户覆盖层 `config.json`（主人随时能删掉恢复出厂）。
+- **回执超长怎么办**：运维回答常常上千字，而回执自己要走 `checkDmReply` 的 `maxCommentChars`（默认 200）闸门。
+  `deliver()` 装不下就把全文写 `statePath('debug-out.txt')`，回执压在上限内并指路（上限很小时只留文件名）。
+  `lib/tools.js` 侧**没有**对回执偷偷放宽闸门 —— 那是防刷屏的安全线。
+- **`force` 只免限额 / 间隔 / 去重，不免护栏**：`lib/policy.js` 的 `checkVideoComment` / `checkDm` / `checkDmReply` / `checkTriple`
+  都加了 `force = false`；屏蔽词、字数上限、`postXxx = off`、未登录没写权限**照样拦**（账号安全线）。云端
+  `cloudflare/src/policy.js` 的 `checkVideoComment`（第二参数是 `bvid` 不是 `video`）与 `checkTriple` 同样加了 `force`。
+- **重启看门鲸真能生效**：`tools/dm-watch.mjs` 每轮写心跳 `statePath('watchdog.json')`
+  （`{ pid, ts, everyMinutes, script, cwd, argv }`），并在每轮开头读 `statePath('restart.request')`：`ts` 比本进程出生时间新，
+  就 detached 起一条新的（**日志接回 `dm-watch.log` / `dm-watch.err.log`**；别用 `stdio:'ignore'`，否则重启后的看门鲸是哑巴、
+  出事查不出来），然后 `process.exit(0)`，并删掉请求文件防死循环。
+  真机验证：`12:44:41` 旧 pid **24560 → 新 pid 6036**，`logs/auto.log` 有「看门鲸按主人（金易木木元）要求换了一条命」，请求文件已清。
+- **真机验证（只读命令，真 client + 真账本）**：`状态` 回「已登录 寻和橼的大肥鱼dsh（mid 3747560556595480）｜等级 Lv2｜硬币 0 /
+  看门鲸：pid … / 视频评论 7/不限｜回复 12/10 / 三连 27/不限｜收藏 27/5｜动态 1/1 /
+  自己刷的视频 26/30（主人点名的不计入）/ 私信：懒寻真=59｜金易木木元=28」。
+- **注意**：调试台挂在 `lib/tools.js` 私信 ack 的分支上，**宿主 DSH 侧要重启才加载**（看门鲸那条私信链路不受影响）。
+
+**④ 本轮改动文件**：`lib/{intent,dmcmd,triple,study,policy,config,ledger,debug,tools}.js`（其中 `lib/debug.js` 是新文件）、
+`cloudflare/src/policy.js`、`tools/dm-watch.mjs`、`test/{dmcmd,debug}.test.mjs`、本文件。
+
+**⑤ 测试**：新增 **`test/debug.test.mjs`**（七种命令真办 / 秘密与危险路径拒绝 / 超长回执落盘且压在上限内 /
+`isDebugOwner` 名单与总开关 / `force` 免限额免间隔免去重但屏蔽词照拦）；`test/dmcmd.test.mjs` 新增第 9 节
+（一条私信多个 BV 号 / 个数到十 / 自己刷有额度而主人点名的不算）。**现在共九套，全绿。**
+
+
 ## 2. 前几轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
 - **`b89bae1`** `feat(reply): 回复不带 @ / 回主人走付费脑子 / 脑子抽风重试 + 消息中心字段修正`
@@ -251,17 +311,20 @@
 `ownerName 懒寻真` / `ownerMid 3494364865103885` / `ownerNames [懒寻真, 金易木木元]` /
 `ownerMids [3494364865103885, 391581639]` / `whaleName bili_83352132154` / `whaleMid 3747560556595480` /
 `dmCheckMinutes 1` / `policy { maxDmPerUserPerDay: 0, maxDmReplyPerUserPerDay: 0, dailyVideoComments: 0, dailyReplies: 10, dailyRepliesOwner: 0, dailyTriples: 0, minIntervalSecondsOwner: 5, postReply:'auto', postVideoComment:'auto', postTriple:'auto' }`（三个 0 都是第七轮主人要的「不限」）。
-其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.mentionOwnersOnReply: false`、`policy.commentOnTriple: true`、`policy.minIntervalSecondsComment: 10`、`brain.paid: 'deepseek'` 这几个新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对）。
+其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.mentionOwnersOnReply: false`、`policy.commentOnTriple: true`、`policy.minIntervalSecondsComment: 10`、
+`learning.dailyWatch: 30`（第九轮：她自己每天最多自己刷 30 个，主人点名的不计入）、`policy.ownerDebug: true` + `policy.debugMids: []`（第九轮：调试最高权限的开关与名单）
+、`brain.paid: 'deepseek'` 这几个新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对）。
 
-### 2.4 测试（**八套全绿**，改动后请照跑）
+### 2.4 测试（**九套全绿**，改动后请照跑）
 ```powershell
 cd E:\donk\dsh-bilibili-whale
 node test/smoke.mjs; node test/mention-dm.test.mjs; node test/triple.test.mjs; node test/reply.test.mjs
-node test/text.test.mjs; node test/dmcmd.test.mjs
+node test/text.test.mjs; node test/dmcmd.test.mjs; node test/debug.test.mjs
 node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 ```
 （注意目录里**没有** `test/smoke.test.mjs`，入口叫 `test/smoke.mjs`；第六轮新增的是 `test/dmcmd.test.mjs` 的第 7、8 节，
-第七轮新增的是 `test/triple.test.mjs` 的第 ⑩ 节。⚠️ 跑测试会往真的 `logs/actions.log` 塞一行假评论（见 §1.9 ② 末尾）。）
+第七轮新增的是 `test/triple.test.mjs` 的第 ⑩ 节，第九轮新增的是 `test/dmcmd.test.mjs` 的第 9 节与 **`test/debug.test.mjs`**（自带临时 `DSH_HOME`，不碰真状态目录）。
+⚠️ 跑测试会往真的 `logs/actions.log` 塞一行假评论（见 §1.9 ② 末尾）。）
 
 ### 2.5 真机验证（真的发出去了）
 - `BV1UAYd6WE2t`（主人那条「@寻和橼的大肥鱼dsh 要这样@」）：`rpid 316071900673` → `selfRpid 316077035713`。
@@ -269,10 +332,13 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸（第七轮重启过，**跑的是含「三连顺手评论」的新代码**）：pid **26904**（2026-10-05 12:13:03 起），
+- 看门鲸（第九轮重启过，**跑的是含「多视频 / 额度 / 调试台 / 自重启」的新代码**）：pid **6036**（2026-10-05 12:44:41 起，
+  由它**自己**按 §1.10 ③ 的「重启」命令从 pid 24560 换命而来），
   命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
-  cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（`Start-Process` 会把这两个文件**覆盖**重写，历史内容不留）。
-  **重启方式**（第六轮实际用的，不需要代理，因为看门鲸不再带 `HTTPS_PROXY`）：
+  cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（手动 `Start-Process` 会把这两个文件**覆盖**重写；它自己换命时是**追加**）。
+  **心跳**：`statePath('watchdog.json')` 每轮刷新（`bili_status` 之外，调试台「状态」也读它）。
+- **现在有两种重启方式**：①主人在私信里对调试档主人说一句「重启」（写 `restart.request`，看门鲸下一轮自己换命）；
+  ②手动重启（第六/七轮实际用的，不需要代理，因为看门鲸不再带 `HTTPS_PROXY`）：
   ```powershell
   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'dm-watch' }  # 找 pid
   Stop-Process -Id <pid> -Force
@@ -288,6 +354,7 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 ### 2.7 第六轮之后的同步与代码状态
 - 同步方式：**没有 sync 脚本**，就是直接拷文件 —— `Copy-Item <repo>\{lib,cloud,cloudflare,persona,skills,assets,notes,tools,.github} <plugin>\ -Recurse -Force`（再加 `package.json`/`README.md`/`cordis.patch.yml`）。第六轮已同步，`lib/intent.js` 是新文件，**第一次同步必须确认它进去了**（`Test-Path <plugin>\lib\intent.js`）。
 - 第七轮又同步了一次（同样只拷改过的 9 个文件，逐个比 MD5 确认 `same`）：`lib/{compose,triple,policy,config,dmcmd,study,tools}.js`、`cloudflare/src/policy.js`、`test/triple.test.mjs`。
+- 第九轮整目录同步 `lib`、`cloudflare`、`tools`（`lib/debug.js` 是新文件，已确认 MD5 在插件目录里一致），比对了 `lib/intent.js`、`lib/debug.js`、`tools/dm-watch.mjs` 三个。
 - 宿主 DSH 侧：`lib/tools.js` 的 ack 分支改动要等宿主重启才会加载（§7）。
 
 
@@ -368,12 +435,22 @@ console.log(await runReplyCheck({}));
    消失的只是楼中楼回复里那个尾巴）；② `policy.replyDmOthers: 'once'`（陌生人只自动回一条，之后要主人点头）要不要放开；
    ③ `minIntervalSeconds: 120`（对陌生人的动作间隔）要不要缩短。
 7. **「三连」实际是「两连」**（第七轮实测）：她账号硬币 `money: 0`，投币必然空转，见 §1.9 ②。想真三连得让她账号有硬币。
+8. **第九轮新上线的三件，请主人过后确认手感**：
+   - ① 一次看多个：一条私信里写几个 BV 号就真看几个（最多 10 个）；也可以说「看 8 个拉康的视频」。
+   - ② 自己刷的额度 `learning.dailyWatch: 30`（**0 = 不限**）：默认 30 个/天，**主人点名的片子不计入、也不受限**。嫌少改这个数字。
+   - ③ 调试最高权限：`policy.ownerDebug: true` + `policy.debugMids: []`（空 = 两位主人都有；只想给金易木木元一位就填 `['391581639']`）。
+     他可以在私信里说「状态」「额度」「日志」「配置」「改配置 policy.x 8」「最近」「重启」。**`force` 只免限额/间隔/去重，屏蔽词与未登录照样拦**。
+     「重启」现在是**真重启**（看门鲸下一轮自己换一条命，日志接回 `dm-watch.log`）。
+   - 遗留提醒：`lib/debug.js` 是**新文件**，往插件目录同步时别漏（§2.7）；调试台挂在 `lib/tools.js` 的私信分支上，**宿主 DSH 侧要重启才加载**（看门鲸那条链路不受影响）。
 
 ## 7. ⚠️ 必须提醒主人
 - 宿主（DSH）**重启**才会加载新的评论回复定时器与提示词。不过第三轮实测：主人插件目录一同步，宿主的评论回复链路**看起来已经热重载**成新代码了（旧代码那种「每 5 分钟往同一条评论追一条」的刷屏在同步之后就停了，`待回` 也归零了）。所以重启是**保险**，不是必需。
   - 第六轮又验证了一次这个现象：同步 `lib/tools.js`（11:39 落盘）之后宿主侧**没重启**，但看门鲸重启后大白话链路立刻可用。
-- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第七轮重启后是 pid 26904**）顶着。
+  - 第九轮再加一条：**调试台是挂在宿主那份 `lib/tools.js` 上的**，所以要用私信运维台（状态/日志/配置/重启）**宿主必须重启**；
+    但看门鲸自己那条链路（大白话支使、自己刷、三连评论）同步 + 重启看门鲸就够了。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第九轮重启后是 pid 6036**）顶着；心跳在 `statePath('watchdog.json')`。
 - 想让她跑腿，**直接说人话就行**：「搜一下拉康精神分析的视频」「你自己去找点视频看看」「帮我跟金易木木元说声谢谢」
   （斜杠命令 `/搜` `/刷` `/转达` `/帮助` 也还留着，老的用惯了不会失效）。**说「能不能帮我搜…？」也算命令**，不会再被当成请教方法。
+  主人名下的片子想一次看几个：**把几个 BV 号一起发给她**（或说「看 5 个××的视频」）；她自己刷有每天 30 个的额度，主人点名的不算。
 - **第七轮起她三连过的视频会顺手留一句评论**（正文自动 @ 两位主人）。想核对「她三连了哪些、评了什么」看
   `logs/actions.log` 里带「三连顺手」的行，和账本 `comments`（`bili_ledger op=list`）。

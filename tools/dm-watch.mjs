@@ -8,10 +8,17 @@
  * 顺带替宿主做两件云端值班的事：报心跳（告诉云端「本机在岗」）、
  * 定期把遥控台上主人点过头的草稿发出去。
  */
+import { spawn } from 'node:child_process';
+import { closeSync, openSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { runDmCheck, runReplyCheck, runStudyOnce } from '../lib/index.js';
-import { appendLog, resolveConfig } from '../lib/config.js';
+import { appendLog, readJsonFile, resolveConfig, statePath, writeJsonFile } from '../lib/config.js';
 import { heartbeat, syncOnce } from '../lib/cloudsync.js';
 import { buildBiliTools } from '../lib/tools.js';
+
+const SELF = fileURLToPath(import.meta.url);
+/** 本进程的出生时间：比它更晚的 `restart.request` 才算「主人让人家换一条命」。 */
+const START_TS = Date.now();
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -44,9 +51,69 @@ function commentTool() {
   }
 }
 
+/**
+ * 报心跳：写 `statePath('watchdog.json')`。
+ *
+ * 主人 2026-10-05「给另一个主人调试最高权限」：调试档主人在私信里发「状态」时，
+ * 要靠这个文件说清「看门鲸还活着吗、pid 多少、每几分钟一轮」。
+ */
+function writeHeartbeat() {
+  try {
+    writeJsonFile(statePath('watchdog.json'), {
+      pid: process.pid,
+      ts: Date.now(),
+      everyMinutes: minutes,
+      script: SELF,
+      cwd: process.cwd(),
+      argv: args,
+    });
+  } catch (error) {
+    appendLog('auto.log', `dm-watch 写心跳失败：${error.message}`);
+  }
+}
+
+/**
+ * 主人从私信里让人家「重启」时，调试台会写 `statePath('restart.request')`；
+ * 这里每轮开头看一眼：请求比本进程更新，就**自己把自己换一条命**。
+ *
+ * 为什么要重启：Node 的 ESM 模块只在进程启动时读一次盘 —— 改了 `lib/*.js` 而没重启，
+ * 改的代码根本没进内存（第七轮踩过：改完不重启就是白改）。
+ */
+function checkRestart() {
+  const request = readJsonFile(statePath('restart.request'), null);
+  const ts = Number(request?.ts ?? 0);
+  if (!Number.isFinite(ts) || ts <= START_TS) return;
+  try {
+    // 新的一条命要把日志接上（`stdio: 'ignore'` 会让重启后的看门鲸变成哑巴，出问题查不出来）。
+    const out = openSync('dm-watch.log', 'a');
+    const err = openSync('dm-watch.err.log', 'a');
+    let child = null;
+    try {
+      child = spawn(process.execPath, [SELF, ...args], {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: ['ignore', out, err],
+        windowsHide: true,
+      });
+    } finally {
+      closeSync(out);
+      closeSync(err);
+    }
+    child.unref();
+    appendLog('auto.log', `看门鲸按主人（${request?.by ?? '?'}）要求换了一条命：旧 pid ${process.pid} → 新 pid ${child.pid ?? '?'}`);
+    rmSync(statePath('restart.request'), { force: true });
+    console.log(`[${new Date().toLocaleTimeString()}] 主人让人家重启：旧 pid ${process.pid} → 新 pid ${child.pid ?? '?'}`);
+    process.exit(0);
+  } catch (error) {
+    appendLog('auto.log', `dm-watch 重启失败：${error.message}`);
+  }
+}
+
 async function tick() {
   const stamp = new Date().toLocaleTimeString();
   round += 1;
+  checkRestart();
+  writeHeartbeat();
   try {
     const result = await runDmCheck({});
     const rows = (result?.notes ?? []).join(' / ');
