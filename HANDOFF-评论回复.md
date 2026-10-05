@@ -61,6 +61,30 @@
 - **待回已归零**（10:59 起 `reply check: 回 0 条 / 跳过 0 条 / 失败 0 条 / 待回 0`），重复刷屏也停了
   —— 宿主在我同步 profile 时似乎**热重载**了新代码，所以本轮**不需要重启 DSH 就生效了**（重启仍然无害）。
 
+### 1.6 第四轮（主人报「它现在回不了评论区的评论了」+ 三条新要求）
+- **症状**：`auto.log` 11:10 / 11:15 连着两次 `reply check: 回 0 条 / 跳过 0 条 / 失败 1 条 / 待回 1`，
+  而那条待回的**恰恰是主人的评论**（`BV1wAYP6YEif` / `rpid 316080212369`），失败原因：**`今日回复已达上限 10 条`**。
+- **真因**：`lib/policy.js` 的 `checkReply` 里 `if (counts.replies >= Number(cfg.policy.dailyReplies))` **不分人** ——
+  主人当天在评论区多聊了几句（含前面那些重复回复）就把 10 条额度吃光，主人的评论也回不了。
+- **修法**：新增 `replyCountToday(ledger, now, wantOwner)`（从 `ledger.replies` 按 `isOwner` 分开数，因为
+  `todayCounts().replies` 是**不分人**的总数），把那条判断拆成两支：
+  - 主人 → 用新配置 **`policy.dailyRepliesOwner`（默认 50，0 = 不限）**；
+  - 别人 → 用 `dailyReplies`，而且只数**非主人**的回复（主人聊再多也不吃陌生人的额度）。
+  `lib/policy.js` 与 `cloudflare/src/policy.js` 都改了（后者还要 `import { dateKey }` + 同一份 helper）。
+- **新要求与对应配置**（都写在 `config.json` 的 userConfig 里）：
+  1. 「我有评论她能回」→ `dailyRepliesOwner: 50`（主人不再被陌生人的额度卡住）。
+  2. 「别人的评论调用免费模型回」→ **本来就是**：`lib/compose.js:156` 与 `lib/brain.js:344` 都是
+     `prefer: isOwner ? 'paid' : ''`（主人走付费 deepseek，别人走免费额度）。
+  3. 「一直自动的刷视频学习」→ `learning.checkMinutes: 10`（宿主定时器）+ **看门鲸也挂了一条学习循环**
+     （`tools/dm-watch.mjs` 新增 `--study-every`，默认 30 轮 ≈ 10 分钟，调 `runStudyOnce({})`；
+     `learnOnce` 按 bvid 去重，两条加起来约每 5 分钟一轮）。
+  4. 回复更勤快 → `replyCheckMinutes: 2`（宿主），看门鲸 `--reply-every 6`（≈2 分钟）。
+- 提交 **`0dd6a5b`**；Worker **`a78af4df-c945-4df3-abcd-5c1915d9156f`**；看门鲸 pid **26876**。
+- 回归测试：`test/reply.test.mjs` 新增第 6 节（陌生人额度满 → 主人照样能回；主人额度满才拦；
+  主人多聊不吃陌生人额度；`dailyRepliesOwner: 0` = 不限）。
+- 真机验证：修完立刻跑一轮 → `回 1 / 跳过 0 / 失败 0`，主人那条回出去了；
+  手动跑一轮学习 → `topic=算法讲解 studied=2 historyReported=2`（两个视频都进了 B 站浏览记录）。
+
 ## 2. 本轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
 - **`b89bae1`** `feat(reply): 回复不带 @ / 回主人走付费脑子 / 脑子抽风重试 + 消息中心字段修正`
