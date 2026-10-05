@@ -998,3 +998,11 @@ console.log(await runReplyCheck({}));
   要再开：把 `cloud.syncMinutes` 删掉或改成 5，并 `gh workflow enable whale.yml`。
 - **生效条件**：看门鲸重启即生效；DSH 宿主插件要**重启一次 DSH** 才换上新代码（重启前插件若先抢到 `dm-round` 锁，
   它那一轮仍会把超长回执丢掉，但下一轮看门鲸会补上 —— 私信不会因此石沉大海）。
+- **打脸与补考（同一晚）**：改完第一次重启看门鲸，真机 `auto.log` 就报 `13:10:30.686Z dm-watch failed: clipText is not defined` ——
+  我在 `lib/tools.js` 里用了 `clipText` **却没 import**（第 1295 行本来就有同样的裸用！）。根因是**没有任何测试跑过 `tools.js` 的私信回执路径**
+  （`test/dmcmd.test.mjs` 只驱动 `runDmCommand`，不经过 tools.js）。补法两条：
+  1. `lib/tools.js` 顶部补 `import { clipText } from './text.js';`；
+  2. `buildBiliTools({ pluginConfig, openBrowser, client })` **新增可注入的 `client`**（只在 `runtime()` 里 `injectedClient ?? new BiliClient(…)`），
+     新增 `test/dm-receipt.test.mjs`：假客户端 + `bili_dm op=ack` 把「认命令 → 裁短 → 过闸门 → 真 `sendMsg` → 记账本」整条路跑起来，
+     断言长回执（>200 字）**真发出去**且 ≤ 私信上限、`maxDmChars: 60` 时也发得出去、`dmTextLimit` 的两级兜底。主测试套因此变成 **10 个文件 10/10 通过**。
+- **教训**：`lib/` 里改完 `tools.js` 一定要有能跑到那条分支的测试（或真机日志复核）——`node --check` 查不出未定义的标识符。
