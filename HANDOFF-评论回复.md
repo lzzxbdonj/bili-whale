@@ -452,9 +452,9 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸（**第十一轮又重启过一次**，跑的是含「分享式评论 / 热闹动态 / 免费脑子节流重试」的新代码）：pid **30520**（2026-10-05 13:34:46 起），
+- 看门鲸（**第十一轮重启过两次**，现在跑的是含「付费回主人 / 分享式评论 / 热闹动态 / 免费脑子节流重试 / 云端对账省 KV 写」的新代码）：pid **21412**（2026-10-05 14:00:25 起），
   命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
-  cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（手动 `Start-Process` 会把这两个文件**覆盖**重写；它自己换命时是**追加**）。
+  cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（手动 `Start-Process` 会把这两个文件**覆盖**重写；它自己换命时是**追加**）。上一只是 pid 30520（13:34:46 起，14:00 杀掉）。
   **心跳**：`statePath('watchdog.json')` 每轮刷新（`bili_status` 之外，调试台「状态」也读它；`cloudflare/src/patrol.js` 的待命闸读的是云端 KV 里的 `meta.localSeenAt`）。
 - ⚠️ **改 `config.json` 不用重启**（`resolveConfig()` 每轮重读），**改 `lib/*.js` 必须重启**（Node ESM 只在进程启动时读一次模块）。
 - **现在有两种重启方式**：①主人在私信里对调试档主人说一句「重启」（写 `restart.request`，看门鲸下一轮自己换命）；
@@ -512,6 +512,10 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
   - 关键区分：主人免的是「每人一条 / 一串一条」（他**换了新评论**还得答），不是「同一条评论追着回两遍」。
   - `lib/tools.js` 里 `answered` 也改成 `answeredRoot || answeredComment`，这样 `bili_inbox` 的「待回」计数才会归零。
 - 回归测试：`test/reply.test.mjs` 第 3 节新增断言（同 rpid 不再进 `pick`、主人换新 rpid 仍照答、`repliedToComment` 的边界）。
+- **⚠ 更深一层的真凶（2026-10-05 下午才挖到，见 §7 最后一条）**：`repliedToComment` 只是「本机账本」这一侧的补丁。
+  云端（GitHub Actions / Worker）的账本存在 Cloudflare KV 里，而 **KV 免费写额度 1000/天 中午就写光了** ——
+  写光之后 `putJson` 静默失败，云端**拿着几小时前的旧账本**干活，`repliedToComment` 在旧账本里当然看不到「已经回过」，
+  于是同一条评论被回了 6 遍。光加去重判断救不了这种情况，必须让「写不进去就不动手」（`kvWritable` / `storeWritable`）。
 
 ## 4. 上一轮记下的坑（仍然有效）
 - **消息中心字段**（`/x/msgfeed/reply` 与 `/x/msgfeed/at`，真机核对过）：
@@ -548,9 +552,13 @@ console.log(await runReplyCheck({}));
 
 ## 6. 未解决 / 待主人确认
 1. ~~「把这条会话的模式调到创造模式吧」~~ —— **主人已自己回答「你现在就是创造模式了」（第三轮）**，那条悬案结清，不用再去翻 `E:\donk\study-mate` 之类目录。
-2. ~~Worker 巡检回主人只能用免费模型~~ → **主人 2026-10-05（第十轮）改口：「统一用免费模型处理」** ——
-   `deepseekText()` 已从 `cloudflare/src/persona.js` 删除，Worker 的 `DEEPSEEK_API_KEY` secret 还留着但**没有任何代码再读它**
-   （想恢复付费兜底去 git 历史里找那段；**别悄悄把 `brain.fallback` 填回 `deepseek`**）。本机与 GitHub Actions 两条线同样不再点付费那家。
+2. ~~Worker 巡检回主人只能用免费模型~~ → 主人 2026-10-05（第十轮）改口「统一用免费模型处理」，**但当天下午又改回去了**：
+   **主人把自己的 DSH API key 交给插件**，让「回主人」（私信 + 评论/回复）走付费那条 —— 现在 `brain.paid: 'deepseek'`
+   （`lib/config.js` 与 `cloudflare/src/policy.js` 双镜像），`lib/brain.js` 的 `draftDmReply` 与 `lib/compose.js` 的
+   `askArgs` 对 `isOwner` 传 `prefer: 'paid'`，**陌生人/刷视频/学习轮仍然 `''`（免费链）**。
+   钥匙只进 GH secret（`gh secret set DEEPSEEK_API_KEY`，2026-10-05T05:44Z）与本机 `$DSH_HOME/.credentials.yaml`，
+   **不落仓库、不写日志**。§7 里那句「出现（付费）就是有人偷偷改回去了」**已经作废** —— 现在回主人出现「（付费）」是**预期**，
+   要警惕的是**陌生人**那条链出现付费。`brain.fallback` 仍是 `pollinations`（免费兜底），失败自动回落，不要改。
 3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。云端现状是 `observeOnly:true` + 未登录 ⇒ 只排队不发；真要它当手得先登录 + 关观察模式（§1.8 ②末尾）。
 4. 私信命令不只 `/搜`、`/转达`、`/帮助` 了：第六轮加了**大白话识别**（`lib/intent.js`）与 `/刷`。主人若还想要别的动作（比如「把这条记进待办」「去给 BVxxxx 留个言」），照 `lib/intent.js` 的 `matchIntent()` 加一档 + 在 `lib/dmcmd.js` 的 `runIntent()` 加一个分支就行 —— 记住铁律：**要办事的必须走代码，走模型只会得到承诺**。
 5. ~~她自己刷片时账本 `watched` 那条 `topic` 是空的~~ —— **第七轮已修**（`watchThese({ ..., topic })` 现在把方向传进 `reportHistory` / `tripleVideo`，见提交 `772b003`）。
@@ -565,10 +573,11 @@ console.log(await runReplyCheck({}));
      他可以在私信里说「状态」「额度」「日志」「配置」「改配置 policy.x 8」「最近」「重启」。**`force` 只免限额/间隔/去重，屏蔽词与未登录照样拦**。
      「重启」现在是**真重启**（看门鲸下一轮自己换一条命，日志接回 `dm-watch.log`）。
    - 遗留提醒：`lib/debug.js` 是**新文件**，往插件目录同步时别漏（§2.7）；调试台挂在 `lib/tools.js` 的私信分支上，**宿主 DSH 侧要重启才加载**（看门鲸那条链路不受影响）。
-9. **第十轮留下的两件「只差一步」**（都要主人点头/知情）：
-   - ① **云端待命闸还没生效**：`cloudflare/src/{patrol,index}.js` 那三刀（本机在岗就 `standby: true` + `POST /patrol?force=1` 压过）
-     必须 `wrangler deploy` 才会部署到线上那张 Worker；**部署 = 改主人 Cloudflare 账号的动作，没点头不做**（命令见 §2.2）。
-     本机那三刀（每轮先 pull 云端账本 / mergeLedger 并 `msgSeen`）已经生效并真机验证过（§1.11 ⑥）。
+9. **第十轮留下的两件「只差一步」**：
+   - ① ~~云端待命闸还没生效~~ → **2026-10-05 下午已 `wrangler deploy`**（Version `78da486c-0da8-4fc8-bc71-ff29c1ac226c`，
+     上一版 `53f0bb54`）：线上已经是「本机在岗就 `standby: true` + `POST /patrol?force=1` 压过」那一版，
+     而且**又多了一层「KV 写不进去也 standby（force 压不过）」**（见 §7 最后一条）。实测：`bili_cloud op=patrol` 回
+     `standby: true` + notes 里 `云端 KV 写不进去（免费写额度 1000/天 见底？）`。
    - ② **Workers AI 的免费额度是每天 10000 neurons，会被写评论吃光**（第十轮当天就光了，`logs/brain.log` 里
      `4006: you have used up your daily free allocation of 10,000 neurons`）。光了她就靠 `brain.fallback: 'pollinations'` 说话（照样免费、不要 key），
      只是慢一点点。想彻底不愁只有两条路：**少让她写评论**，或**主人自己上 Cloudflare 付费计划** —— 他不想要付费，别擅自开。
@@ -578,15 +587,16 @@ console.log(await runReplyCheck({}));
   - 第六轮又验证了一次这个现象：同步 `lib/tools.js`（11:39 落盘）之后宿主侧**没重启**，但看门鲸重启后大白话链路立刻可用。
   - 第九轮再加一条：**调试台是挂在宿主那份 `lib/tools.js` 上的**，所以要用私信运维台（状态/日志/配置/重启）**宿主必须重启**；
     但看门鲸自己那条链路（大白话支使、自己刷、三连评论）同步 + 重启看门鲸就够了。
-- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第十一轮重启后是 pid 30520**）顶着；心跳在 `statePath('watchdog.json')`。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第十一轮重启后是 pid 21412**）顶着；心跳在 `statePath('watchdog.json')`。
 - 想让她跑腿，**直接说人话就行**：「搜一下拉康精神分析的视频」「你自己去找点视频看看」「帮我跟金易木木元说声谢谢」
   （斜杠命令 `/搜` `/刷` `/转达` `/帮助` 也还留着，老的用惯了不会失效）。**说「能不能帮我搜…？」也算命令**，不会再被当成请教方法。
   主人名下的片子想一次看几个：**把几个 BV 号一起发给她**（或说「看 5 个××的视频」）；她自己刷有每天 30 个的额度，主人点名的不算。
 - **第七轮起她三连过的视频会顺手留一句评论**（正文自动 @ 两位主人）。想核对「她三连了哪些、评了什么」看
   `logs/actions.log` 里带「三连顺手」的行，和账本 `comments`（`bili_ledger op=list`）。
 - **第十轮起**（m01645 一口气改的五件事）：**陌生人也不再「只回一条」**（`replyDmOthers: 'auto'`，一轮最多招呼 3 位陌生人）；
-  对外动作间隔从 120 秒缩到 **60 秒**（主人侧仍是 5 秒）；**她不再用任何付费模型** —— 回主人私信、回主人评论、写评论、发动态全走免费额度
-  （超额自动兜到 pollinations；`logs/brain.log` 里出现「（付费）」就是有人在偷偷把 `prefer`/`fallback` 改回去了，要立刻查）；
+  对外动作间隔从 120 秒缩到 **60 秒**（主人侧仍是 5 秒）；**回主人改回付费**（主人当天下午把 DSH key 交了出来，见 §6 第 2 条）——
+  私信回主人、回主人评论/回复走 `brain.paid: 'deepseek'`（钥匙走 GH secret 与本机凭据，不落仓库），
+  **陌生人、刷视频、学习轮仍全走免费额度**（超额自动兜到 pollinations；`logs/brain.log` 里陌生人的行出现「（付费）」才是有人改坏了）；
   **回复主人的评论不再挂 `@` 尾巴**（一级评论的 @ 不受影响，一直好着）。
 - **同一条评论不会云端、本机各回一遍了**：本机每轮巡检**先拉云端账本**再动手，`logs/auto.log` 里出现
   `cloud pull: 回复 N / 评论 N` 就是它在合并（`logs/cloudsync.log` 里是 `pull ok：并集后回复 N / 评论 N，云端草稿 M 条`）。
@@ -597,4 +607,33 @@ console.log(await runReplyCheck({}));
   别照着旧记忆又改回去。
 - **免费脑子会「节流」**：`logs/brain.log` 里出现 `http 402：免费家节流，等 8 秒再问一次` 是**正常**的（pollinations 对匿名调用限速，
   隔 3～4 秒必挡、隔 20 秒以上就通），代码会自动等一下重试一次；一直 402 才是真出问题。想少撞它就别让评论/动态挤在同一秒里发。
+- **🔴 2026-10-05 下午挖到的真凶：Cloudflare KV 免费「写」额度是 1000/天，会被我们自己写光。**
+  （不是脑子抽风，也不是去重写错——这一天上午那条「同一条评论被回 6 遍」的刷屏就是这个。）
+  - **现场**：`wrangler kv key put` 直接报 `your account has reached the free usage limit for this operation for today [code: 10048]`；
+    KV 里 `state:meta.localSeenAt` / `state:ledger.lastActionTs` 停在 **04:36–04:37Z**，而当时已经 05:56Z ⇒ 状态冻结约 80 分钟。
+  - **为什么看不出来**：`cloudflare/src/store.js:54` 的 `putJson` 是 `try { await kv.put(...) } catch { return false }` —— **静默吞掉失败**，
+    而 `POST /state` 完全不检查返回值，照样回 `{ok:true}` 和一份「合并后」的假象配置。
+  - **后果**：① 云端（GH Actions / Worker）拿的是几小时前的旧账本 ⇒ `repliedToComment` 认不出「回过」，**重复回复**；
+    ② KV 里那份旧 `state:config` 会**盖住**仓库默认值（`loadState` = defaults ← `varsConfig(env)` ← `state:config`），
+    旧配置里 `dailyVideoComments: 0` 是**不限量**，所以那段时间视频评论照发。
+  - **写量账**：本机 `syncOnce` 每 5 分钟一轮 = `POST /state`（账本+cookie+草稿+meta ≈ 4 写）+ `POST /config`（1 写），
+    再加 GH cron 与 Worker cron，一天一千多次 ⇒ 中午见底。**额度按 UTC 零点重置（北京时间早上 08:00）**。
+  - **已做的四道修**（提交 `618bb0f` + `0a69f5b`，`cloudflare` 已 deploy `78da486c-0da8-4fc8-bc71-ff29c1ac226c`）：
+    1. **Worker 端**：`/state`·`/config`·`/heartbeat` 都回 `persisted`（`false` = 没落盘）；`/state` 不再每轮 `appendCloudLog`（省一次写）；
+       新增 **`POST /probe`**（写一个 nonce 再读回来）。
+    2. **`cloud/run.mjs`**：动手之前先 `storeWritable()`（打 `/probe`），读不回来就 `return` —— 宁可少干一轮，不拿旧账本重复回复。
+    3. **`cloudflare/src/patrol.js`**：`runPatrol` 里新增 `kvWritable(env)`，写不进去就 `standby: true`，**`?force=1` 也压不过**；
+       日志里 `待命=` 现在区分「是（本机在岗）」与「是（云端 KV 写不进去）」。
+    4. **本机 `lib/cloudsync.js`**：`pushState`/`pushConfig` 带指纹，内容没变就整轮跳过（心跳至少每 5 分钟一次）；
+       没落盘就**不记指纹**（下轮重试），并写 `push 没落盘：云端 KV 写不进去（免费写额度见底？）`。
+  - **频率**：`.github/workflows/whale.yml` 的 cron `*/10` → **`*/30`**，`cloudflare/wrangler.toml` 的 `[triggers] crons` 同步改 `*/30`
+    （私有仓库 Actions 免费额度 2000 分钟/月，`*/10` 是 2880 轮/月，稳超；改小后约 1440 轮/月）。
+  - **⚠ `wrangler.toml` 的 `[vars]` 会盖住 `cloudflare/src/policy.js` 的代码默认值**（`varsConfig` → `deepMerge`），
+    改默认值必须**两处一起改**：这次把 `DAILY_VIDEO_COMMENTS 3→5`、`DAILY_REPLIES 10→5`、`MIN_INTERVAL_SECONDS 120→60` 同步过去，
+    顺手把 `WHALE_NAME` 改成新名字「寻和橼的大肥鱼dsh」。
+  - **实测证据**：GH dispatch run `37270399633`（13 秒就结束）日志只有两行结果 ——
+    `状态拉取完成：cookie 5 项 · 账本草稿 6 条` 接着就是 `云端 KV 写不进去（读回来的 nonce 对不上）→ 本轮不动作，免得拿着旧账本重复回复`；
+    `bili_cloud op=patrol` 也回 `standby: true` + 同样的 notes。
+  - **额度恢复之前**：云端两条线都不会碰 B 站（本机看门鲸照常干活，它用的是本机 `ledger.json`，安全的那条）。
+    恢复之后第一次对账会把新配置/新账本自动补上去（没落盘的指纹没记，所以会自动重试），**不用手动推**。
 
