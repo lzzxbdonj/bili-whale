@@ -31,6 +31,7 @@ const { statePath } = await import('../lib/config.js');
 const { loadLedger, recordReply, recordWatched, saveLedger, saveLedgerMerged } = await import('../lib/ledger.js');
 const { withLock, lockHolder } = await import('../lib/lock.js');
 const { runInboxReplies } = await import('../lib/reply.js');
+const { forgetReplied, hasReplied, markReplied, repliedRpidSet } = await import('../lib/replied.js');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let failed = 0;
@@ -232,6 +233,41 @@ await checkAsync('锁被占着时 runInboxReplies 直接跳过', async () => {
   assert.equal(result.replied, 0, '拿不到锁就别动手');
   assert.equal(calls.length, 0, '拿不到锁时连视频详情都不该去取');
   assert.match(String(result.skipped[0]?.reason ?? ''), /reply-round 的锁被别的进程拿着/);
+});
+
+console.log('\n5. 追加日志：账本被盖掉了，也还记得「这条回过了」');
+const JOURNAL_RPID = 316077777777;
+check('markReplied 之后认得出，账本里那行即使被抹掉也认得出', () => {
+  markReplied(JOURNAL_RPID, { root: 123, bvid: 'BV1journal' });
+  assert.equal(hasReplied(JOURNAL_RPID), true, '日志里记了就该认得');
+  assert.equal(repliedRpidSet().has(JOURNAL_RPID), true, '集合里也要有');
+  // 模拟另一个写手（老代码 / 云端）整份覆盖写，把账本里这行连带抹掉
+  const clobbered = loadLedger();
+  clobbered.replies = clobbered.replies.filter((row) => Number(row.rpid) !== JOURNAL_RPID);
+  saveLedger(clobbered);
+  assert.equal(
+    loadLedger().replies.some((row) => Number(row.rpid) === JOURNAL_RPID),
+    false,
+    '前提：账本里已经找不到这条了',
+  );
+  assert.equal(hasReplied(JOURNAL_RPID), true, '账本没了，日志还在');
+});
+await checkAsync('账本失忆 + 日志有记录 ⇒ 一条都不发', async () => {
+  const calls = [];
+  const result = await runInboxReplies({
+    cfg: CFG,
+    ledger: loadLedger(),
+    run: fakeRun(calls),
+    inbox: { selfMid: CFG.whaleMid, targets: [{ ...TARGET, rpid: JOURNAL_RPID, replyRoot: 123 }] },
+    compose: async () => '不该再回一遍',
+  });
+  assert.equal(result.replied, 0, '不该回');
+  assert.equal(calls.length, 0, '日志拦住的连视频详情都不该去取');
+  assert.match(String(result.skipped[0]?.reason ?? ''), /追加日志/, '理由要写清是追加日志拦的');
+});
+check('forgetReplied 之后可以重发（主人说「这条再回一次」）', () => {
+  assert.ok(forgetReplied({ bvid: 'BV1journal' }) >= 1, '要真抹掉至少一行');
+  assert.equal(hasReplied(JOURNAL_RPID), false, '抹掉之后就不该再拦');
 });
 
 rmSync(HOME, { recursive: true, force: true });

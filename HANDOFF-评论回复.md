@@ -779,3 +779,11 @@ console.log(await runReplyCheck({}));
 5. **上线**：提交见仓库；插件目录七个文件 MD5 全 `same`；看门鲸重启为 pid **22036**（15:02 起）。
    ⚠ **宿主里的插件还是 13:15 那份老代码**（没有锁、没有重读、还是覆盖写）——
    要彻底断根得重启一次 DSH；在那之前如果又见到重复回复，先看 `logs/auto.log` 里是哪条链路的节奏。
+6. **补刀（同日 15:05，追加日志）**：即便账本被整份覆盖写丢更新，也要认得「这条回过了」——
+   新增 `lib/replied.js`（$DSH_HOME/bilibili-whale/replied.jsonl，**只追加不重写**，
+   谁也盖不掉）：`markReplied(rpid,{root,bvid})` / `hasReplied(rpid)` / `forgetReplied({bvid})`。
+   `lib/reply.js` 在排到某条时与发送前各查一次日志；`lib/tools.js` 的 `bili_reply` 发成功后写一笔，
+   `bili_ledger op=forget` 顺手把该视频的痕迹从日志里抹掉（主人要「再回一次」时用）。
+   账本里已有的 16 条回复已回灌进日志（10 个 rpid）。测试第 5 节覆盖（账本被抹后仍拦得住 + forget 后可重发）。
+   ⚠ 宿主插件会在插件文件变化后自动重载：`boot.json` 显示 15:05:58 又加载了一次（在 `lib/replied.js` 15:05:15、
+   `lib/reply.js` 15:05:21、`lib/tools.js` 15:05:34 同步之后）——**宿主与看门鲸现在跑的都是新代码**。
