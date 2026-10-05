@@ -71,6 +71,13 @@ export const DEFAULTS = {
     /** 每天最多收藏几个「刷到觉得好看」的视频。 */
     dailyFavorites: 5,
     /**
+     * 三连成功的视频要不要顺手写一条一级评论。主人 2026-10-05：「三连的视频都要评论」。
+     *
+     * 默认 true：`lib/triple.js` 连完就点评一句（正文由 `composeVideoComment` 写、
+     * `checkVideoComment` 把关）。评论没发成**不算三连失败**，原因照实记在回执行里。
+     */
+    commentOnTriple: true,
+    /**
      * 每天最多三连几个。**0 = 不限**。
      *
      * 主人 2026-10-05：「不加三连上限，币没了也没事」——投币上限由 B 站自己管，
@@ -91,6 +98,13 @@ export const DEFAULTS = {
     minIntervalSeconds: 120,
     /** 回复主人时的最小间隔（秒）——主人优先，允许更勤快。 */
     minIntervalSecondsOwner: 15,
+    /**
+     * 连着给几个视频评论时，两条之间歇几秒（0 = 不歇）。
+     *
+     * 三连是一条接一条做的，评论要是也挤在一秒里发，B 站风控会当成刷屏。
+     * 刷视频那条路（`lib/dmcmd.js` 的 `watchThese`）按这个值在两条之间等一下。
+     */
+    minIntervalSecondsComment: 10,
     /** 一级评论最大字数（B 站上限 1000，这里收紧防刷屏）。 */
     maxCommentChars: 200,
     /** 命中的词一律不评论（防止她被引战/广告话题带走）。 */
@@ -412,7 +426,7 @@ export function ownerMentionList(cfg) {
  * @param options.now - 当前时间戳（毫秒，测试可注入）。
  * @returns {{allowed: boolean, needsConfirm: boolean, mode: string, reasons: string[], warnings: string[], message: string, hint: string}}
  */
-export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false, now = Date.now() }) {
+export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false, now = Date.now(), ignoreInterval = false }) {
   const mode = cfg.policy.postVideoComment;
   const reasons = [];
   const warnings = [];
@@ -428,11 +442,16 @@ export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false,
   if (cfg.policy.dedupePerVideo === true && bvid && commentedVideo(ledger, bvid) !== null) {
     reasons.push(`这个视频（${bvid}）已经评论过了`);
   }
-  if (counts.videoComments >= Number(cfg.policy.dailyVideoComments)) {
-    reasons.push(`今日视频评论已达上限 ${cfg.policy.dailyVideoComments} 条`);
+  // 每日上限：**0 = 不限**（跟 dailyTriples / dailyRepliesOwner 一个规矩）。
+  // 主人 2026-10-05：「三连的视频都要评论」——默认 3 会把当天第 4 条起的评论全挡掉。
+  const limit = Number(cfg.policy.dailyVideoComments);
+  if (limit > 0 && counts.videoComments >= limit) {
+    reasons.push(`今日视频评论已达上限 ${limit} 条`);
   }
-  const interval = intervalOk(cfg, ledger, now, false);
-  if (!interval.ok) reasons.push(interval.reason);
+  if (ignoreInterval !== true) {
+    const interval = intervalOk(cfg, ledger, now, false);
+    if (!interval.ok) reasons.push(interval.reason);
+  }
   const needsConfirm = mode === 'confirm' && confirm !== true;
   return {
     allowed: reasons.length === 0 && !needsConfirm,

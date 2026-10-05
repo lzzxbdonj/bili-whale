@@ -1,11 +1,12 @@
-# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第六轮：私信大白话识别已上线** —— 看 §1.8）
+# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第七轮：三连顺手评论已上线** —— 看 §1.9，上一轮看 §1.8）
 
 > 给接手的会话：这份文件是唯一权威的交接说明。仓库 **`E:\donk\dsh-bilibili-whale`**（git 分支 `master`），
 > 宿主插件装在 **`C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale`**，
 > 状态/日志目录 **`C:\Users\Administrator\.dsh\bilibili-whale\`**（`config.json` / `ledger.json` / `cookies.json` / `logs\auto.log` / `logs\brain.log`）。
 >
 > **上一轮交接里「还没做的事」①–⑦ 已全部做完，另外查出并修掉了两个真 bug。** 见 §3。
-> **第六轮**（最新）：私信不再要求斜杠命令 —— 主人说人话她就当场办（§1.8）；云端付费脑子到底怎么配也写在 §1.8。
+> **第六轮**：私信不再要求斜杠命令 —— 主人说人话她就当场办（§1.8）；云端付费脑子到底怎么配也写在 §1.8。
+> **第七轮**（最新）：**三连的视频都会顺手评论**（§1.9）、私信每日上限全关（§1.9 ①）、顺手修掉「和」字被当成转达动词的误判。
 
 ## 1. 主人的诉求（原话）
 - m04637：「完善一下评论回复」。
@@ -186,6 +187,53 @@
   **当前分工是本机看门鲸干活、云端只排队**——这也正是「写操作永不给 Worker 加端点」那条坑的延续。
 
 
+### 1.9 第七轮：**三连的视频都要评论** + 私信上限全关
+主人原话（本轮入口）：「三连的视频都要评论，私信上限关掉」。
+
+**① 私信上限关掉（已生效，云端也已同步）**
+- 真正卡人的是**主动私信**那条：`policy.maxDmPerUserPerDay`（默认 3）。证据是私信里金易木木元那条回执原文
+  「没转成：「懒寻真」今天已经收到 58 条私信（上限 3 条）」（文案出自 `lib/dmcmd.js` 的 `runRelay`）。
+- `checkDm()`（`lib/policy.js`）**没有主人豁免**：`const limit = Number(cfg.policy.maxDmPerUserPerDay) || 0; if (limit > 0) {...}`。
+  对比 `checkDmReply()` 里那句 `if (limit > 0 && owner !== true)` —— **回私信从来没卡过两位主人**（注释里写着踩过的坑），
+  所以「她不回我」那种现场只可能来自主动私信/转达这条线。
+- 已把 `policy.maxDmPerUserPerDay` 与 `policy.maxDmReplyPerUserPerDay` 都改成 **0（不限）**（`bili_config op=set`，落盘
+  `C:\Users\Administrator\.dsh\bilibili-whale\config.json`；云端经 `pushConfig` 也已是 0）。**0 = 不限**是本仓约定。
+- **改配置不用重启看门鲸**：`resolveConfig()` 每轮重读 `config.json`（`lib/config.js`），无缓存。
+- 顺带逮到一个**更危险的误判**（得先修它再关上限，否则误判会真发出去）：原句
+  「从场域，本体论，认识论**和**目的论四个方面总结整个系列，而不是这一期」被 `parseIntent` 判成 `relay`，
+  目标成了 `目的论四个方面总结整个系列，而不是这一期` —— 根因是 `lib/intent.js` 的 `RELAY_PATTERNS` 里有**光杆「和」「跟」**。
+  修法：给这两个词加前瞻 `跟(?=[\s\S]{1,8}(?:说|讲|带|捎|传))`（理由写在 `lib/intent.js` 的注释里）；回归测试钉在 `test/dmcmd.test.mjs`。
+
+**② 三连的视频都要评论（新键 `policy.commentOnTriple: true`，已真机验证）**
+- 设计：评论收进 **`tripleVideo()`（三连的唯一收口）**，三个调用点（`lib/dmcmd.js` 的 `watchThese`、`lib/study.js` 的 `learnOnce`、
+  `lib/tools.js` 的 `bili_triple`）自动都生效 —— 不在每个调用方各写一遍。**评论发不出去不算三连失败**（原因照实回）。
+- 新增两个键（`lib/config.js` 与 `cloudflare/src/policy.js` **逐字镜像**，`port.test.mjs` 会比对）：
+  `policy.commentOnTriple: true`、`policy.minIntervalSecondsComment: 10`。
+- 正文复用 `composeVideoComment()`（脑子写，自动 @ 两位主人），闸门复用 `checkVideoComment()`，记账复用 `recordComment()`。
+- **两个不改就大面积失败的地方**：
+  1. `checkVideoComment()` 原来是 `counts.videoComments >= cfg.policy.dailyVideoComments` 硬比 → **写 0 会变成「永远拦住」**。
+     现在改成 `if (limit > 0 && …)`：**0 = 不限**（与 `dailyTriples` / `dailyRepliesOwner` 一致）。主人的生效值已设 0。
+  2. 评论走的是非主人间隔档（`minIntervalSeconds: 120`），而**回一条私信也会刷新 `lastActionTs`** ⇒ 刚回过私信时评论必被拦。
+     所以 `tripleVideo` 内部调 `checkVideoComment({ ..., ignoreInterval: true })`，节奏改由显式键
+     `policy.minIntervalSecondsComment`（默认 10 秒）在 `watchThese` 里逐条 sleep 控制。
+- `composeVideoComment()` 顺手修一处：补 @ 是在裁剪**之后**做的，模型写满 200 字再加 @ 尾巴会变 212 字、被「超长」整条挡掉
+  —— 现在先算 `ownerNames` 的 @ 长度 `reserve`，按 `maxChars - reserve` 裁剪。
+- **真机验证（2026-10-05 12:13 探针：真 client + 真脑子，跑完即删）**：
+  - 草稿档（`postVideoComment:'confirm'`）：`BV1suam6sEtq` → `done=true like=true`，回 `needsConfirm:true` + 草稿原文（一个字没发）；
+  - 自动档：`BV17pHB6tEtT` → `posted:true rpid 316087374641`，正文带 `@懒寻真 @金易木木元`，账本 `comments` 记了一条，
+    `logs/actions.log` 多了 `comment bvid=… rpid=… 三连顺手 text=…` —— **靠「三连顺手」这四个字区分「三连评的」和「学习轮自己留言的」**。
+- ⚠️ **顺带查明一个真实现状：「三连」现在其实是两连** —— B 站 `nav` 实测她 **硬币 = 0**（`money: 0`，等级 Lv2），
+  投币接口报「硬币不足」会被 `alreadyDone()` 当成正常（`result.coin = 0`，不记 error）⇒ **点赞 + 收藏成功，投币静默空转**。
+  想让三连真的三连，得让她账号里有硬币（B 站每天登录/看视频会送），或者接受「两连」这个事实。
+- ⚠️ 小瑕疵（新发现）：跑 `test/triple.test.mjs` 时那条假客户端会把 `comment bvid=BV16T4y1k7dB rpid=31415926 三连顺手 text=这条真好玩 @懒寻真`
+  写进**真的** `logs/actions.log`（`appendLog` 只认状态目录）。查日志时别被这条测试数据骗到；要根治就给 `appendLog` 加一个环境变量覆盖目录。
+
+**③ 本轮改动文件**：`lib/{policy,config,compose,triple,dmcmd,study,tools}.js`、`cloudflare/src/policy.js`、`test/{triple,dmcmd}.test.mjs`、本文件。
+
+**④ 测试**：`test/triple.test.mjs` 新增第 ⑩ 块（草稿档 / 自动档 / 发失败不算三连失败 / 脑子没写出话 / 开关关掉 / `dailyVideoComments: 0` 不限 vs 3 拦住），
+旧的四处 `tripleVideo` 调用补 `commentOnTriple: false`（旧断言要求「调用序列恰好等于那 5 个接口」）。**八套仍全绿**。
+
+
 ## 2. 前几轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
 - **`b89bae1`** `feat(reply): 回复不带 @ / 回主人走付费脑子 / 脑子抽风重试 + 消息中心字段修正`
@@ -202,8 +250,8 @@
 ### 2.3 配置现状（`config.json` 的 userConfig）
 `ownerName 懒寻真` / `ownerMid 3494364865103885` / `ownerNames [懒寻真, 金易木木元]` /
 `ownerMids [3494364865103885, 391581639]` / `whaleName bili_83352132154` / `whaleMid 3747560556595480` /
-`dmCheckMinutes 1` / `policy { maxDmReplyPerUserPerDay:20, minIntervalSecondsOwner:5, postVideoComment:'auto', postTriple:'auto' }`。
-其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.mentionOwnersOnReply: false`、`brain.paid: 'deepseek'` 这两个新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对）。
+`dmCheckMinutes 1` / `policy { maxDmPerUserPerDay: 0, maxDmReplyPerUserPerDay: 0, dailyVideoComments: 0, dailyReplies: 10, dailyRepliesOwner: 0, dailyTriples: 0, minIntervalSecondsOwner: 5, postReply:'auto', postVideoComment:'auto', postTriple:'auto' }`（三个 0 都是第七轮主人要的「不限」）。
+其余用 `lib/config.js` 的 DEFAULTS（注意 `policy.mentionOwnersOnReply: false`、`policy.commentOnTriple: true`、`policy.minIntervalSecondsComment: 10`、`brain.paid: 'deepseek'` 这几个新项，云端 `cloudflare/src/policy.js` 是**逐字镜像**，改一边必须改另一边，`port.test.mjs` 会比对）。
 
 ### 2.4 测试（**八套全绿**，改动后请照跑）
 ```powershell
@@ -212,7 +260,8 @@ node test/smoke.mjs; node test/mention-dm.test.mjs; node test/triple.test.mjs; n
 node test/text.test.mjs; node test/dmcmd.test.mjs
 node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 ```
-（注意目录里**没有** `test/smoke.test.mjs`，入口叫 `test/smoke.mjs`；第六轮新增的是 `test/dmcmd.test.mjs` 的第 7、8 节。）
+（注意目录里**没有** `test/smoke.test.mjs`，入口叫 `test/smoke.mjs`；第六轮新增的是 `test/dmcmd.test.mjs` 的第 7、8 节，
+第七轮新增的是 `test/triple.test.mjs` 的第 ⑩ 节。⚠️ 跑测试会往真的 `logs/actions.log` 塞一行假评论（见 §1.9 ② 末尾）。）
 
 ### 2.5 真机验证（真的发出去了）
 - `BV1UAYd6WE2t`（主人那条「@寻和橼的大肥鱼dsh 要这样@」）：`rpid 316071900673` → `selfRpid 316077035713`。
@@ -220,7 +269,7 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸（第六轮重启过，**跑的是含大白话识别的新代码**）：pid **30700**（2026-10-05 11:44 起），
+- 看门鲸（第七轮重启过，**跑的是含「三连顺手评论」的新代码**）：pid **26904**（2026-10-05 12:13:03 起），
   命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
   cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（`Start-Process` 会把这两个文件**覆盖**重写，历史内容不留）。
   **重启方式**（第六轮实际用的，不需要代理，因为看门鲸不再带 `HTTPS_PROXY`）：
@@ -238,6 +287,7 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 
 ### 2.7 第六轮之后的同步与代码状态
 - 同步方式：**没有 sync 脚本**，就是直接拷文件 —— `Copy-Item <repo>\{lib,cloud,cloudflare,persona,skills,assets,notes,tools,.github} <plugin>\ -Recurse -Force`（再加 `package.json`/`README.md`/`cordis.patch.yml`）。第六轮已同步，`lib/intent.js` 是新文件，**第一次同步必须确认它进去了**（`Test-Path <plugin>\lib\intent.js`）。
+- 第七轮又同步了一次（同样只拷改过的 9 个文件，逐个比 MD5 确认 `same`）：`lib/{compose,triple,policy,config,dmcmd,study,tools}.js`、`cloudflare/src/policy.js`、`test/triple.test.mjs`。
 - 宿主 DSH 侧：`lib/tools.js` 的 ack 分支改动要等宿主重启才会加载（§7）。
 
 
@@ -312,11 +362,18 @@ console.log(await runReplyCheck({}));
    注意：本机与 GitHub Actions 两条线的 key **都已配好**，只有这只 Worker 待确认。
 3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。云端现状是 `observeOnly:true` + 未登录 ⇒ 只排队不发；真要它当手得先登录 + 关观察模式（§1.8 ②末尾）。
 4. 私信命令不只 `/搜`、`/转达`、`/帮助` 了：第六轮加了**大白话识别**（`lib/intent.js`）与 `/刷`。主人若还想要别的动作（比如「把这条记进待办」「去给 BVxxxx 留个言」），照 `lib/intent.js` 的 `matchIntent()` 加一档 + 在 `lib/dmcmd.js` 的 `runIntent()` 加一个分支就行 —— 记住铁律：**要办事的必须走代码，走模型只会得到承诺**。
-5. 遗留小瑕疵（不影响用）：她自己刷片时账本 `watched` 那条 `topic` 是空的（`watchThese` 收到的 `topic` 默认 `''`，只有回执文案里带了方向），主人要按方向统计「她自己刷了什么」会少一列。
+5. ~~她自己刷片时账本 `watched` 那条 `topic` 是空的~~ —— **第七轮已修**（`watchThese({ ..., topic })` 现在把方向传进 `reportHistory` / `tripleVideo`，见提交 `772b003`）。
+6. **待主人确认**（问过还没答）：① `policy.mentionOwnersOnReply` 要不要开回 `true`（开了 = 她**回复主人评论**时尾巴重新自动挂 `@懒寻真 @金易木木元`；
+   默认 `false`，理由是「回复不用 @」那条原话，但主人在 m00625 又问过「视频评论自动 @ 我们的功能怎么消失了」——实测**一级评论的 @ 一直是好的**，
+   消失的只是楼中楼回复里那个尾巴）；② `policy.replyDmOthers: 'once'`（陌生人只自动回一条，之后要主人点头）要不要放开；
+   ③ `minIntervalSeconds: 120`（对陌生人的动作间隔）要不要缩短。
+7. **「三连」实际是「两连」**（第七轮实测）：她账号硬币 `money: 0`，投币必然空转，见 §1.9 ②。想真三连得让她账号有硬币。
 
 ## 7. ⚠️ 必须提醒主人
 - 宿主（DSH）**重启**才会加载新的评论回复定时器与提示词。不过第三轮实测：主人插件目录一同步，宿主的评论回复链路**看起来已经热重载**成新代码了（旧代码那种「每 5 分钟往同一条评论追一条」的刷屏在同步之后就停了，`待回` 也归零了）。所以重启是**保险**，不是必需。
   - 第六轮又验证了一次这个现象：同步 `lib/tools.js`（11:39 落盘）之后宿主侧**没重启**，但看门鲸重启后大白话链路立刻可用。
-- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（现在 pid **30700**）顶着。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第七轮重启后是 pid 26904**）顶着。
 - 想让她跑腿，**直接说人话就行**：「搜一下拉康精神分析的视频」「你自己去找点视频看看」「帮我跟金易木木元说声谢谢」
   （斜杠命令 `/搜` `/刷` `/转达` `/帮助` 也还留着，老的用惯了不会失效）。**说「能不能帮我搜…？」也算命令**，不会再被当成请教方法。
+- **第七轮起她三连过的视频会顺手留一句评论**（正文自动 @ 两位主人）。想核对「她三连了哪些、评了什么」看
+  `logs/actions.log` 里带「三连顺手」的行，和账本 `comments`（`bili_ledger op=list`）。

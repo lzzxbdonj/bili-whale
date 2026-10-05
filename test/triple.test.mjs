@@ -11,9 +11,9 @@
  */
 import { strict as assert } from 'node:assert';
 import { BiliClient } from '../lib/api.js';
-import { checkTriple, pickFolderTitle, DEFAULT_FAVORITE_FOLDER } from '../lib/policy.js';
+import { checkTriple, checkVideoComment, pickFolderTitle, DEFAULT_FAVORITE_FOLDER } from '../lib/policy.js';
 import { tripleVideo, reportHistory, tripleConfig } from '../lib/triple.js';
-import { emptyLedger, recordFavorite, recentWatched, recordWatched, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
+import { emptyLedger, recordComment, recordFavorite, recentWatched, recordWatched, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
 import { ensureDailyWatch } from '../lib/study.js';
 
 const VIDEO = { aid: 936177870, bvid: 'BV16T4y1k7dB', title: '如何炼成超强学习能力？', author: '硬核学长', cid: 123456, durationSec: 600 };
@@ -64,6 +64,16 @@ function fakeClient({ folders = [], fail = {}, popularResult = null } = {}) {
     calls.push({ path: 'historyReport', options });
     if (fail.historyReport) throw new Error(fail.historyReport);
     return {};
+  };
+  client.comments = async (bvid, options) => {
+    calls.push({ path: 'comments', bvid, options });
+    if (fail.comments) throw new Error(fail.comments);
+    return { replies: [{ uname: '路人甲', message: '这条真好看' }] };
+  };
+  client.commentAdd = async (options) => {
+    calls.push({ path: 'commentAdd', options });
+    if (fail.commentAdd) throw new Error(fail.commentAdd);
+    return { rpid: 31415926 };
   };
   return { client, calls };
 }
@@ -131,7 +141,7 @@ function fakeClient({ folders = [], fail = {}, popularResult = null } = {}) {
   const { client, calls } = fakeClient({ folders: [{ id: 7, title: '别的夹子' }] });
   const result = await tripleVideo({
     client,
-    cfg: { policy: { postTriple: 'auto', tripleCoin: 1 }, feed: { folderByTopic: { 'AI 智能体': 'AI 学习' } } },
+    cfg: { policy: { postTriple: 'auto', tripleCoin: 1, commentOnTriple: false }, feed: { folderByTopic: { 'AI 智能体': 'AI 学习' } } },
     ledger,
     video: VIDEO,
     topic: 'AI 智能体',
@@ -148,7 +158,7 @@ function fakeClient({ folders = [], fail = {}, popularResult = null } = {}) {
   assert.equal(tripleCountToday(ledger), 1);
 
   const { client: reuse, calls: calls2 } = fakeClient({ folders: [{ id: 9, title: 'AI 学习' }] });
-  const second = await tripleVideo({ client: reuse, cfg: { policy: { postTriple: 'auto' }, feed: { folderByTopic: { 'AI 智能体': 'AI 学习' } } }, ledger: emptyLedger(), video: VIDEO, topic: 'AI 智能体', score: 8 });
+  const second = await tripleVideo({ client: reuse, cfg: { policy: { postTriple: 'auto', commentOnTriple: false }, feed: { folderByTopic: { 'AI 智能体': 'AI 学习' } } }, ledger: emptyLedger(), video: VIDEO, topic: 'AI 智能体', score: 8 });
   assert.equal(second.folder.created, false);
   assert.equal(calls2.some((item) => item.path === 'favFolderCreate'), false, '夹子已存在就别建');
 }
@@ -157,14 +167,14 @@ function fakeClient({ folders = [], fail = {}, popularResult = null } = {}) {
 {
   const ledger = emptyLedger();
   const { client } = fakeClient({ fail: { videoCoin: 'B站接口返回 34005：超过投币上限' } });
-  const result = await tripleVideo({ client, cfg: { policy: { postTriple: 'auto' } }, ledger, video: VIDEO, score: 8 });
+  const result = await tripleVideo({ client, cfg: { policy: { postTriple: 'auto', commentOnTriple: false } }, ledger, video: VIDEO, score: 8 });
   assert.equal(result.like, true);
   assert.equal(result.errors.length, 0, `「已经投过币」不该记成错误（实际：${result.errors.join('；')}）`);
   assert.equal(result.done, true);
 
   const ledger2 = emptyLedger();
   const { client: broken } = fakeClient({ fail: { videoLike: 'B站接口返回 -412：请求被拦截', favDeal: 'B站接口返回 -400：参数错误' } });
-  const partial = await tripleVideo({ client: broken, cfg: { policy: { postTriple: 'auto' } }, ledger: ledger2, video: VIDEO, score: 8 });
+  const partial = await tripleVideo({ client: broken, cfg: { policy: { postTriple: 'auto', commentOnTriple: false } }, ledger: ledger2, video: VIDEO, score: 8 });
   assert.equal(partial.like, false);
   assert.equal(partial.done, true, '收藏没成但投币成了，也算连过（不重复撒币）');
   assert.ok(partial.errors.some((line) => line.includes('点赞失败')), '失败原因要带回来');
@@ -287,4 +297,70 @@ function fakeClient({ folders = [], fail = {}, popularResult = null } = {}) {
   assert.ok(off.reason.includes('reportHistory'));
 }
 
-console.log('✓ 三连测试通过：分数/每日上限/去重门槛、收藏夹分类、逐步容错、浏览记录契约、刷视频留痕、每天必有记录');
+// ⑩ 三连顺手评论（主人 2026-10-05：「三连的视频都要评论」）。
+//
+// 三条规矩：连成了就评一句（正文由 `composeVideoComment` 写，测试里注入 stub，
+// 不打真模型）；评论发不成**不算三连失败**；`commentOnTriple=false` 退回纯三连。
+{
+  const owners = { policy: { postTriple: 'auto', postVideoComment: 'auto' }, ownerName: '懒寻真', ownerMid: '1' };
+  const hot = [{ uname: '路人甲', message: '这条真好看' }];
+
+  // (1) 连成了 → 读热评（调用方没给才自己去读）+ 写评论 + 记账。
+  const ledger = emptyLedger();
+  const { client, calls } = fakeClient();
+  const result = await tripleVideo({ client, cfg: owners, ledger, video: VIDEO, score: 8, topComments: null, compose: async () => '这条真好玩 @懒寻真' });
+  assert.equal(result.done, true);
+  assert.equal(result.comment.posted, true, `评论该发出去（实际：${result.comment.reason ?? ''}）`);
+  assert.equal(result.comment.rpid, 31415926);
+  assert.ok(calls.some((item) => item.path === 'comments'), '没给热评时要自己去读一眼');
+  const sent = calls.find((item) => item.path === 'commentAdd');
+  assert.equal(sent.options.message, '这条真好玩 @懒寻真', '发的就是脑子写的那句（@ 由 compose 补）');
+  assert.deepEqual(sent.options.mentions, [{ name: '懒寻真', mid: '1' }], '真 @ 要带 UID');
+  assert.equal(ledger.comments.length, 1, '发出去的评论要记账（去重也靠它）');
+  assert.equal(ledger.comments[0].bvid, VIDEO.bvid);
+  assert.equal(ledger.comments[0].text, '这条真好玩 @懒寻真');
+
+  // (2) 评论是草稿模式 → 只出草稿，一个字都不发。
+  const draft = emptyLedger();
+  const gate = fakeClient();
+  const guarded = await tripleVideo({ client: gate.client, cfg: { ...owners, policy: { ...owners.policy, postVideoComment: 'confirm' } }, ledger: draft, video: VIDEO, score: 8, topComments: hot, compose: async () => '先给主人看一眼的话' });
+  assert.equal(guarded.done, true, '评论是草稿，三连照做');
+  assert.equal(guarded.comment.posted, false);
+  assert.equal(guarded.comment.needsConfirm, true);
+  assert.equal(guarded.comment.draft, '先给主人看一眼的话');
+  assert.equal(gate.calls.some((item) => item.path === 'commentAdd'), false, '草稿模式不许发');
+  assert.equal(draft.comments.length, 0);
+
+  // (3) 评论发挂了 → 三连还是三连（失败原因带回来）。
+  const failed = emptyLedger();
+  const bad = await tripleVideo({ client: fakeClient({ fail: { commentAdd: 'B站接口返回 -412：请求被拦截' } }).client, cfg: owners, ledger: failed, video: VIDEO, score: 8, topComments: hot, compose: async () => '这条真好玩' });
+  assert.equal(bad.done, true);
+  assert.equal(bad.comment.posted, false);
+  assert.ok(bad.comment.reason.includes('-412'), `失败原因要带回来（实际：${bad.comment.reason}）`);
+  assert.equal(failed.comments.length, 0);
+
+  // (4) 脑子没写出话（compose 返回 null）→ 不发模板垃圾话。
+  const mute = emptyLedger();
+  const quiet = await tripleVideo({ client: fakeClient().client, cfg: owners, ledger: mute, video: VIDEO, score: 8, topComments: hot, compose: async () => null });
+  assert.equal(quiet.done, true);
+  assert.equal(quiet.comment.posted, false);
+  assert.ok(quiet.comment.reason.includes('脑子'), `要说清是脑子没写（实际：${quiet.comment.reason}）`);
+
+  // (5) 开关关掉 → 一声不吭，消息里也不带 comment 的假象。
+  const silent = await tripleVideo({ client: fakeClient().client, cfg: { ...owners, policy: { ...owners.policy, commentOnTriple: false } }, ledger: emptyLedger(), video: VIDEO, score: 8, topComments: hot, compose: async () => '不该被叫到' });
+  assert.equal(silent.done, true);
+  assert.equal(silent.comment.posted, false);
+  assert.ok(silent.comment.reason.includes('commentOnTriple'));
+
+  // (6) `dailyVideoComments` 支持 0 = 不限（不然「都要评论」当天第 4 条就被挡）。
+  const wide = emptyLedger();
+  for (let index = 0; index < 5; index += 1) recordComment(wide, { bvid: `BV1wide${index}`, aid: index, rpid: index, text: '以前发的' });
+  const base = { postVideoComment: 'auto', dedupePerVideo: true, maxCommentChars: 200, blockKeywords: [] };
+  const unlimited = checkVideoComment({ cfg: { policy: { ...base, dailyVideoComments: 0 } }, ledger: wide, video: { bvid: 'BV1brandNew' }, message: '新的一条', ignoreInterval: true });
+  assert.equal(unlimited.allowed, true, `0 要当成不限（实际：${unlimited.reasons.join('；')}）`);
+  const capped = checkVideoComment({ cfg: { policy: { ...base, dailyVideoComments: 3 } }, ledger: wide, video: { bvid: 'BV1brandNew' }, message: '新的一条', ignoreInterval: true });
+  assert.equal(capped.allowed, false, '正整数上限还是要拦');
+  assert.ok(capped.reasons.some((line) => line.includes('上限')), '要说明撞了每日上限');
+}
+
+console.log('✓ 三连测试通过：分数/每日上限/去重门槛、收藏夹分类、逐步容错、浏览记录契约、刷视频留痕、每天必有记录、三连顺手评论');
