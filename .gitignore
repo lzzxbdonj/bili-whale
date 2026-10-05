@@ -18,3 +18,7 @@ _tmp-*.mjs
 cloudflare/test/_scratch.mjs
 dm-watch.log
 dm-watch.log.err
+
+# wrangler 在本仓库跑起来的缓存（2026-10-05 跑 kv key put 时生成的）
+.wrangler/
+
