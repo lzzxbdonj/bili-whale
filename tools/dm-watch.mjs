@@ -127,6 +127,11 @@ async function tick() {
   round += 1;
   checkRestart();
   writeHeartbeat();
+  // 云端路线总开关：`cloud.syncMinutes: 0` 表示「本机不跟云端来往」。
+  // 主人 2026-10-05：「云端路线先关了吧」——那之后本机不再报心跳、不再交接账本，
+  // 云端也就不会以为自己在值班（配合 `gh workflow disable whale.yml` 一起用）。
+  // 每轮重读配置，改完立刻生效，不用重启看门鲸。
+  const cloudOff = Number(resolveConfig({})?.cloud?.syncMinutes ?? 5) === 0;
   try {
     const result = await runDmCheck({});
     const rows = (result?.notes ?? []).join(' / ');
@@ -139,10 +144,12 @@ async function tick() {
   }
 
   // 顺手报到：本机开着的时候，云端调度器就不该再喊 GitHub Actions 干活。
-  try {
-    await heartbeat({});
-  } catch {
-    /* 网络不通也照跑本机的活 */
+  if (cloudOff !== true) {
+    try {
+      await heartbeat({});
+    } catch {
+      /* 网络不通也照跑本机的活 */
+    }
   }
 
   // 评论区也归看门鲸管：别人回了她 / @ 了她，该回的就回一句（限流在 checkReply 里）。
@@ -169,7 +176,7 @@ async function tick() {
     }
   }
 
-  if (round % syncEvery === 0) {
+  if (cloudOff !== true && round % syncEvery === 0) {
     try {
       const outcome = await syncOnce({}, { commentTool: commentTool() });
       const posted = outcome?.served?.posted ?? 0;

@@ -20,7 +20,7 @@ mkdirSync(join(HOME, 'bilibili-whale', 'logs'), { recursive: true });
 const { parseDebugCommand, runDebugCommand, debugHelp, DEBUG_LOGS } = await import('../lib/debug.js');
 const { statePath, writeJsonFile, readUserConfig, resolveConfig } = await import('../lib/config.js');
 const { emptyLedger, recordWatched, recordFavorite, recordDm, recordDmIncoming, todayBucket } = await import('../lib/ledger.js');
-const { isDebugOwner, checkDmReply, checkVideoComment, checkTriple } = await import('../lib/policy.js');
+const { isDebugOwner, checkDmReply, checkVideoComment, checkTriple, dmTextLimit } = await import('../lib/policy.js');
 
 // 默认配置 + 两位主人（临时 DSH_HOME 里没有真 config.json，主人 UID/昵称得自己摆好）。
 const CFG = {
@@ -137,13 +137,14 @@ const say = async (text, cfg = CFG) => runDebugCommand({ cfg, command: parseDebu
 
 {
   // 超长回执：全文落盘，回执本身必须压到私信上限内（否则会被 checkDmReply 整条拦掉）
-  const many = Array.from({ length: 60 }, (_, i) => `第 ${i + 1} 行的动作记录${'（很长的尾巴）'.repeat(3)}`).join('\n') + '\n';
+  // 2026-10-05 之后私信有自己的上限 `policy.maxDmChars`（默认 500），所以这份日志要造得**超过 500 字**。
+  const many = Array.from({ length: 60 }, (_, i) => `第 ${i + 1} 行的动作记录${'（很长的尾巴）'.repeat(6)}`).join('\n') + '\n';
   writeFileSync(statePath('logs/actions.log'), many, 'utf8');
   const big = await say('日志');
   assert.ok(big.text.includes('debug-out.txt'), `超长要指路到文件（实际：${big.text}）`);
   assert.ok(readFileSync(statePath('debug-out.txt'), 'utf8').includes('第 60 行'), '全文要真写进文件');
-  assert.ok(big.text.length <= CFG.policy.maxCommentChars, `回执要压到上限内（实际 ${big.text.length} 字）`);
-  const tightCfg = { ...CFG, policy: { ...CFG.policy, maxCommentChars: 60 } };
+  assert.ok(big.text.length <= dmTextLimit(CFG), `回执要压到私信上限内（实际 ${big.text.length} 字）`);
+  const tightCfg = { ...CFG, policy: { ...CFG.policy, maxDmChars: 60 } };
   const tight = await say('日志', tightCfg);
   assert.ok(tight.text.length <= 60, `上限很小时也要装得下（实际 ${tight.text.length} 字）`);
   assert.ok(tight.text.includes('debug-out.txt'));

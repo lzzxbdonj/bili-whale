@@ -34,7 +34,7 @@ export const DEFAULTS = {
    * 配置版本戳（与 `lib/config.js` 逐字一致）：改了 policy / feed / learning / dailyDynamic 的
    * 默认值就 +1。`cloud/run.mjs` 的 `healConfig()` 靠它对 KV 里那份旧 `state:config` 自愈。
    */
-  cfgVersion: 2,
+  cfgVersion: 3,
   policy: {
     /** 视频一级评论：auto 直接发 / confirm 只出草稿 / off 禁止。 */
     postVideoComment: 'confirm',
@@ -139,6 +139,15 @@ export const DEFAULTS = {
     minIntervalSecondsComment: 10,
     /** 一级评论最大字数（B 站上限 1000，这里收紧防刷屏）。 */
     maxCommentChars: 200,
+    /**
+     * 私信正文最大字数。**跟评论的 `maxCommentChars` 分开算**。
+     *
+     * 主人 2026-10-05：「为什么刷完视频还没有给我回私信」。现场：她刷完 3 条视频，
+     * 回执 266 字，被评论用的 200 字上限整条拦掉（`checkDmReply` 用 `maxCommentChars`），
+     * 私信一个字都没发出去 —— 命令办了，主人却什么都收不到。
+     * B 站私信正文上限约 500 字，这里就按 500 来（回执自己会先裁到上限内再进闸门）。
+     */
+    maxDmChars: 500,
     /** 命中的词一律不评论（防止她被引战/广告话题带走）。 */
     blockKeywords: ['加群', '微信', 'QQ群', '代刷', '互粉', '刷单', '博彩', '赌博'],
     /** 同一天同一视频不重复评论。 */

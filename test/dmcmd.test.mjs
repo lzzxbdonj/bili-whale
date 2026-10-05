@@ -19,7 +19,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dmCommandHelp, parseDmCommand, runDmCommand, runDmIntent } from '../lib/dmcmd.js';
 import { looksLikeActionRequest, parseIntent } from '../lib/intent.js';
-import { emptyLedger, recordWatched, selfWatchedToday, seenVideo, seenVideoSet } from '../lib/ledger.js';
+import { emptyLedger, recordDmIncoming, recordWatched, selfWatchedToday, seenVideo, seenVideoSet } from '../lib/ledger.js';
+import { checkDmReply, dmTextLimit } from '../lib/policy.js';
 
 // 临时 DSH_HOME：`/刷` 那条链会 `appendLog('actions.log')`，用真家目录会把假记录灌进真日志。
 const HOME = join(tmpdir(), `dsh-dmcmd-test-${Date.now()}`);
@@ -44,7 +45,7 @@ const CFG = {
 };
 
 /** 假 BiliClient：只记下调用。 */
-function fakeClient({ searchResult = null, failSearch = '', failVideo = '', hotCount = 3 } = {}) {
+function fakeClient({ searchResult = null, failSearch = '', failVideo = '', hotCount = 3, videoTitle = '拉康最著名的理论：镜像阶段' } = {}) {
   const calls = [];
   return {
     calls,
@@ -61,7 +62,7 @@ function fakeClient({ searchResult = null, failSearch = '', failVideo = '', hotC
       video: async (id) => {
         calls.push({ path: 'video', id });
         if (failVideo !== '') throw new Error(failVideo);
-        return { bvid: String(id), aid: 460754856, cid: 345175659, title: '拉康最著名的理论：镜像阶段', author: '潜在狗子', view: 133000, duration: '7:13', durationSec: 433 };
+        return { bvid: String(id), aid: 460754856, cid: 345175659, title: videoTitle, author: '潜在狗子', view: 133000, duration: '7:13', durationSec: 433 };
       },
       comments: async (id) => {
         calls.push({ path: 'comments', id });
@@ -493,6 +494,44 @@ const SEARCH_HITS = [
   const namedOut = await runDmIntent({ cfg: bulkCfg, ledger: namedLed, client: fakeClient({ searchResult: SEARCH_HITS }).client, mid: OWNER_A, uname: '懒寻真', text: '看 2 个拉康的视频' });
   assert.equal(namedLed.watched.length, 2, `主人说两条就两条（实际：${namedOut.text}）`);
   assert.ok(namedOut.text.includes('刷了 2 个'), `回执要说清两条（实际：${namedOut.text}）`);
+
+  // 9.6 回执「宁短不可丢」（主人 2026-10-05：「为什么刷完视频还没有给我回私信」）
+  // 真机：她刷完 3 条视频，回执 266 字，`checkDmReply` 拿**评论的** 200 字上限卡它，
+  // 整条私信被丢在闸门外（动作真做了，主人一个字没收到）。现在私信有自己的
+  // `policy.maxDmChars`（默认 500），而且回执一律先裁到上限内再进闸门。
+  const longHits = SEARCH_HITS.map((hit, index) => ({ ...hit, title: `${hit.title}：这一讲把拉康的三界说讲得很细，值得记笔记（第 ${index + 1} 讲）` }));
+  const longCfg = { ...bulkCfg, policy: { ...bulkCfg.policy, maxDmChars: 500 } };
+  const longLed = emptyLedger();
+  recordDmIncoming(longLed, { mid: OWNER_A, uname: '懒寻真', text: '刷视频去', ts: Date.now() });
+  const longOut = await runDmIntent({
+    cfg: longCfg,
+    ledger: longLed,
+    client: fakeClient({ searchResult: longHits, videoTitle: '拉康导读：这一讲把镜像阶段和三界说讲得很细，值得记笔记（第一讲）' }).client,
+    mid: OWNER_A,
+    uname: '懒寻真',
+    text: '刷视频去',
+  });
+  assert.ok(longOut.text.length > 200, `三条长标题的回执本来就超过评论的 200 字（实际 ${longOut.text.length} 字）`);
+  assert.ok(longOut.text.length <= 490, `回执要留在私信上限内、还留点余量（实际 ${longOut.text.length} 字）`);
+  assert.equal(
+    checkDmReply({ cfg: longCfg, ledger: longLed, mid: OWNER_A, uname: '懒寻真', text: longOut.text, confirm: true, force: true }).allowed,
+    true,
+    `这条回执要过得了私信闸门（真机那次就是被 200 字拦掉的；实际 ${longOut.text.length} 字）`,
+  );
+  // 老配置（只有 maxCommentChars）退回老规矩，升级瞬间不会突然放开
+  assert.equal(dmTextLimit({ policy: { maxCommentChars: 200 } }), 200, '没配 maxDmChars 就退回评论上限');
+  assert.equal(dmTextLimit({ policy: { maxCommentChars: 200, maxDmChars: 500 } }), 500, '配了就按私信自己的数');
+  assert.equal(
+    checkDmReply({ cfg: bulkCfg, ledger: longLed, mid: OWNER_A, uname: '懒寻真', text: '字'.repeat(266), confirm: true, force: true }).allowed,
+    false,
+    '老配置（只有 maxCommentChars: 200）照样拦 266 字',
+  );
+  // 超过私信上限还是拦：安全线只是换了个数字
+  assert.equal(
+    checkDmReply({ cfg: { ...longCfg, policy: { ...longCfg.policy, maxDmChars: 100 } }, ledger: longLed, mid: OWNER_A, uname: '懒寻真', text: longOut.text, confirm: true, force: true }).allowed,
+    false,
+    '超私信上限照样拦',
+  );
 
   // 账本侧的「见过」清单：watched / study / comments / favorites 都算
   const seenHelper = emptyLedger();

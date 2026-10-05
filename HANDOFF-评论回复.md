@@ -967,3 +967,34 @@ console.log(await runReplyCheck({}));
      8.2 与 9.4 显式写 `watchPerRound: 1`（那两节钉的是「挑哪一条」，不是「挑几条」）。
 - **验证**：主测试套 9 个文件 **9/9 通过**；`cloudflare/test/port.test.mjs` 通过；`test/smoke.mjs` 通过（17 个工具）。
 - **生效条件**：看门鲸重启即生效；DSH 宿主插件要**重启一次 DSH** 才换上新代码。
+
+## §17 「为什么刷完视频还没有给我回私信」+ 云端路线先关（2026-10-05 深夜）
+
+主人原话：「为什么刷完视频还没有给我回私信，云端路线先关了吧，这个bot在私信里面要能回信息」。
+
+- **真机证据**：`C:\Users\Administrator\.dsh\bilibili-whale\logs\auto.log` 每轮都写
+  `dm check: 寒暄 0 条 / 备注 3 条 / pid 20400 / 「懒寻真」命令回执没发出去：私信 266 字，超过上限 200 字`
+  （13:01:36Z；pid 15112 那条是 277 字）。同一时刻 `actions.log` 里她**真刷了片真评论了**
+  （`13:00:42/13:01:09/13:01:35/13:02:14 comment bvid=BV13g41157hK / BV1T84y167U9 / BV1NCgVzoEG9 / BV1Tb411M7FA 三连顺手`），
+  主人会话里却一条回执都没有 —— 动作做了，回执被闸门丢了。
+- **根因**：私信长度闸门借用了**评论**的上限。`lib/policy.js` 的 `checkDmReply` 读 `policy.maxCommentChars`
+  （DEFAULTS 200，用户的 `config.json` 里根本没这一项），而「刷了 3 条」那种回执天然 266~277 字 ⇒ 超一点就**整条不发**。
+- **修法（私信有自己的上限，且回执宁短不可丢）**：
+  1. `lib/config.js`：新增 `policy.maxDmChars: 500`（B 站私信正文上限），`cfgVersion: 2 → 3`
+     （`healConfig` 会照版本重推云端）；`cloudflare/src/policy.js` 同步加这一项并同版本号 ——
+     `cloudflare/test/port.test.mjs` 会逐个 `deepEqual` 两边 DEFAULTS，改一边必须改另一边。
+  2. `lib/policy.js`：新增导出 `dmTextLimit(cfg)`（`maxDmChars` → 退回 `maxCommentChars` → 再退回 500），
+     `checkDm` / `checkDmReply` 的长度判断都改用它。
+  3. `lib/tools.js`：命令回执与自动寒暄在送闸门**之前先 `clipText(…, dmTextLimit(cfg))`** ——
+     以前是「超长就不发」，现在是「先裁短再发」（回执宁可少写几句，也绝不能让主人收不到）。
+  4. `lib/dmcmd.js`：新增 `dmClip(cfg, text)`（留 10 字余量），`/搜` 列表、自己挑的回执、`watchThese` 回执三处都用它。
+  5. `lib/debug.js`：运维台回执上限跟着 `dmTextLimit` 走（超长仍把全文写 `debug-out.txt`）。
+  6. `tools/dm-watch.mjs`：`tick()` 每轮读 `cloud.syncMinutes`，为 0 就**不报心跳、不交接账本**（原来无条件报，是漏点）。
+- **验证**：`node --check` 7 个文件过；主测试套 9 个文件 **9/9 通过**（`test/dmcmd.test.mjs` 新增 9.6 节「回执宁短不可丢」：
+  长标题下回执 > 200 字且 ≤ 490 字、`checkDmReply` 放行、老配置仍拦 266 字、`maxDmChars: 100` 时照样拦）；
+  `cloudflare/test/port.test.mjs` 通过；`test/smoke.mjs` 通过（17 个工具）。
+- **云端路线已关**：`config.json` 写 `cloud.syncMinutes: 0`（本机不再心跳/交接，宿主插件的云端定时器也不再挂），
+  外加 `gh workflow disable whale.yml --repo lzzxbdonj/bili-whale`（`gh workflow list --all` → `whale disabled_manually`）。
+  要再开：把 `cloud.syncMinutes` 删掉或改成 5，并 `gh workflow enable whale.yml`。
+- **生效条件**：看门鲸重启即生效；DSH 宿主插件要**重启一次 DSH** 才换上新代码（重启前插件若先抢到 `dm-round` 锁，
+  它那一轮仍会把超长回执丢掉，但下一轮看门鲸会补上 —— 私信不会因此石沉大海）。
