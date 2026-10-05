@@ -311,6 +311,18 @@ const SEARCH_HITS = [
   assert.equal(relay.target, '金易木木元 谢谢');
   assert.equal(parseIntent('告诉懒寻真人家想他啦').name, 'relay');
 
+  // 7.5b 光杆「和」是连词不是转达动词（2026-10-05 真事故：金易木木元发的
+  //      「从场域，本体论，认识论和目的论四个方面总结整个系列，而不是这一期」
+  //      被「和」切成「转达『目的论四个方面总结整个系列…』给懒寻真」，她回了句「没转成」。
+  //      当时靠私信上限拦住才没发出去 —— 上限一关，这条误判就会真发一条垃圾私信。
+  assert.equal(
+    parseIntent('从场域，本体论，认识论和目的论四个方面总结整个系列，而不是这一期'),
+    null,
+    '带「和」的正常句子不许被当成转达',
+  );
+  assert.notEqual(parseIntent('顺着这个和那个都看看')?.name, 'relay', '「和」在别的档位也不许变成 relay');
+  assert.equal(parseIntent('我和他说一下').name, 'relay', '「和…说」是转达，别连坐');
+
   // 7.6 「在支使人干活但认不出来」要能被标出来（好让脑子老实说办不到）
   assert.equal(looksLikeActionRequest('帮我重启一下程序'), true, '认不出也要知道这是在支使人');
   assert.equal(looksLikeActionRequest('你好呀主人'), false, '纯聊天不算支使');
