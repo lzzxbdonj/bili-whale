@@ -187,11 +187,19 @@
   - 加完就生效，**不需要 `deploy`**（改 secret 是改运行时环境，不是改代码）。
   - 验证方式：Worker 巡检回主人那条评论时，`cloudflare/src/persona.js` 会先打 `/chat/completions`；在 Cloudflare 面板
     「Workers & Pages → bili-whale → Logs」能同时看到有没有报错回落。回落是**静默**的（设计如此，不让定时任务整条崩）。
-- ⚠️ **但云端现在发不出任何东西**：`bili_cloud op=config` 读到 `observeOnly: true`，`bili_cloud op=status` 显示
-  **未登录（云端没有可用 cookie）+ 等级 Lvnull + 观察模式开**；`cloudflare/src/index.js:271` 的 `canWrite` 要求
-  `isLogin===true && observeOnly!==true && level!==0` 三条同时成立。所以就算配好付费 key，**这只 Worker 也只排队不发**。
-  真要「云端当手」得：①登录云端那只号（cookie 同步 / 扫码）②关掉观察模式（`observeOnly:false`）③等级不为 0。
-  **当前分工是本机看门鲸干活、云端只排队**——这也正是「写操作永不给 Worker 加端点」那条坑的延续。
+- ⚠️ **观察模式已于 2026-10-05 下午关掉**（主人原话：「开始往云端搬项目,观察模式关掉」）：
+  `E:\donk\dsh-bilibili-whale\cloudflare\wrangler.toml:48` 的 `OBSERVE_ONLY = "false"`，`wrangler deploy` 后线上版本
+  **`84f43e19-1d46-4c88-9855-8d1edf13faaf`**（前两版 `78da486c…`、`bd2e286f…`），部署输出里 `env.OBSERVE_ONLY ("false")`、
+  `schedule: */30 * * * *`；`bili_cloud op=status` 已显示「观察模式：关（按策略真发）」。
+- **但 Worker 自己仍然发不出东西**：`bili_cloud op=patrol` 回的 `loggedIn: false`、`canWrite: false` —— Cloudflare 的出口 IP 被
+  B 站 -412 拦着，连 nav 都登不上（`cloudflare/src/patrol.js:232` 的 `canWrite` 要求 `loggedIn && observeOnly!==true && !levelLimited`）。
+  所以「观察模式」这个开关现在只影响：① Worker 那次 cron 巡检的 `canWrite`；② 遥控台手动发（`/comment`、`/reply`、`/dynamic`
+  在 true 时回 409，见 `cloudflare/src/index.js:706/745/779`）；③ `/approve` 故意不看它（`:606-615`，点头了就要真发）。
+- ✅ **真正搬到云端的「手」是 GitHub Actions 那条线**：`E:\donk\dsh-bilibili-whale\cloud\run.mjs`（grep `observe` 零匹配，
+  **从来不看观察模式**），由 `.github/workflows/whale.yml` 的 `*/30` cron / `workflow_dispatch` 拉起，通过 `run('bili_*')` 调整套工具
+  （回私信含 `bili_dm op=ack`、回评论 `replyInbox`、刷视频＋三连 `patrolComments`、学习 `studyRound`、每日动态 `bili_dynamic`、
+  遥控台已点头草稿 `postApproved`）。关机后就是它顶上（前面那道闸是 `LOCAL_TTL_MS = 30 分钟`本机在岗让位 + `storeWritable()` KV 可写检查）。
+
 
 
 ### 1.9 第七轮：**三连的视频都要评论** + 私信上限全关
@@ -559,7 +567,9 @@ console.log(await runReplyCheck({}));
    钥匙只进 GH secret（`gh secret set DEEPSEEK_API_KEY`，2026-10-05T05:44Z）与本机 `$DSH_HOME/.credentials.yaml`，
    **不落仓库、不写日志**。§7 里那句「出现（付费）就是有人偷偷改回去了」**已经作废** —— 现在回主人出现「（付费）」是**预期**，
    要警惕的是**陌生人**那条链出现付费。`brain.fallback` 仍是 `pollinations`（免费兜底），失败自动回落，不要改。
-3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。云端现状是 `observeOnly:true` + 未登录 ⇒ 只排队不发；真要它当手得先登录 + 关观察模式（§1.8 ②末尾）。
+3. 云端整套跑通：**观察模式已关**（2026-10-05 下午，线上 `84f43e19…`，§1.8 ②末尾）；但 Worker 自己仍登录不上（-412），
+   **真动手的是 GitHub Actions 的 `cloud/run.mjs`**（不看观察模式）。剩下的唯一拦路虎是 **KV 免费写额度 1000/天**（见 §7 的 🔴 段）——
+   额度没恢复前云端每轮在 `storeWritable()` / `kvWritable()` 就返回。
 4. 私信命令不只 `/搜`、`/转达`、`/帮助` 了：第六轮加了**大白话识别**（`lib/intent.js`）与 `/刷`。主人若还想要别的动作（比如「把这条记进待办」「去给 BVxxxx 留个言」），照 `lib/intent.js` 的 `matchIntent()` 加一档 + 在 `lib/dmcmd.js` 的 `runIntent()` 加一个分支就行 —— 记住铁律：**要办事的必须走代码，走模型只会得到承诺**。
 5. ~~她自己刷片时账本 `watched` 那条 `topic` 是空的~~ —— **第七轮已修**（`watchThese({ ..., topic })` 现在把方向传进 `reportHistory` / `tripleVideo`，见提交 `772b003`）。
 6. ~~**待主人确认**：① `policy.mentionOwnersOnReply` 要不要开回 `true`；② `policy.replyDmOthers: 'once'` 要不要放开；③ `minIntervalSeconds: 120` 要不要缩短。~~
