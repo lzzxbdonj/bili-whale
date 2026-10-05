@@ -13,6 +13,8 @@
 
 const MAX_EVENTS = 500;
 const MAX_MATERIALS = 30;
+/** 「刷到过什么」只留最近这些条（与 lib/ledger.js 的 MAX_WATCHED 逐字一致）。 */
+const MAX_WATCHED = 400;
 
 /** 空账本。 */
 export function emptyLedger() {
@@ -24,6 +26,13 @@ export function emptyLedger() {
     follows: [],
     dms: [],
     favorites: [],
+    /**
+     * 她**刷到/看过**的视频流水（主人 2026-10-05：「让它刷视频能留下痕迹」）。
+     *
+     * 为什么单独记一份：B 站浏览记录只有她自己账号里看得到，而且 `search` 搜出来的条目
+     * 不带 cid 根本报不进去；主人想核「她今天到底刷了些什么」得有本机这份。
+     */
+    watched: [],
     study: [],
     dmIncoming: [],
     replyIndex: {},
@@ -54,6 +63,7 @@ export function createLedger(raw) {
     follows: Array.isArray(value.follows) ? value.follows : [],
     dms: Array.isArray(value.dms) ? value.dms : [],
     favorites: Array.isArray(value.favorites) ? value.favorites : [],
+    watched: Array.isArray(value.watched) ? value.watched : [],
     study: Array.isArray(value.study) ? value.study : [],
     dmIncoming: Array.isArray(value.dmIncoming) ? value.dmIncoming : [],
     replyIndex: typeof value.replyIndex === 'object' && value.replyIndex !== null ? value.replyIndex : {},
@@ -75,6 +85,7 @@ export function snapshotLedger(ledger) {
   ledger.follows = ledger.follows.slice(-MAX_EVENTS);
   ledger.dms = ledger.dms.slice(-MAX_EVENTS);
   ledger.study = ledger.study.slice(-MAX_EVENTS);
+  ledger.watched = ledger.watched.slice(-MAX_WATCHED);
   ledger.materials = ledger.materials.slice(-MAX_MATERIALS);
   return ledger;
 }

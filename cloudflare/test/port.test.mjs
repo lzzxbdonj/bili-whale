@@ -315,6 +315,8 @@ check('createLedger 形状与源文件 emptyLedger 一致', () => {
     follows: [],
     dms: [],
     favorites: [],
+    // 「刷到过什么」的视频流水（主人 2026-10-05：「让它刷视频能留下痕迹」）
+    watched: [],
     study: [],
     dmIncoming: [],
     replyIndex: {},

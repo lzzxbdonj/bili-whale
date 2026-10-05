@@ -13,7 +13,7 @@ import { strict as assert } from 'node:assert';
 import { BiliClient } from '../lib/api.js';
 import { checkTriple, pickFolderTitle, DEFAULT_FAVORITE_FOLDER } from '../lib/policy.js';
 import { tripleVideo, reportHistory, tripleConfig } from '../lib/triple.js';
-import { emptyLedger, recordFavorite, tripledAlready, tripleCountToday } from '../lib/ledger.js';
+import { emptyLedger, recordFavorite, recentWatched, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
 
 const VIDEO = { aid: 936177870, bvid: 'BV16T4y1k7dB', title: '如何炼成超强学习能力？', author: '硬核学长', cid: 123456, durationSec: 600 };
 
@@ -190,4 +190,47 @@ function fakeClient({ folders = [], fail = {} } = {}) {
   assert.ok(bad.reason.includes('-400'), '报失败也要把原因带回来，不能吞掉');
 }
 
-console.log('✓ 三连测试通过：分数/每日上限/去重门槛、收藏夹分类、逐步容错、浏览记录契约');
+// ⑧ 刷视频留痕（主人 2026-10-05：「让它刷视频能留下痕迹」）。
+//
+// 背景：`reportHistory` 原来只认「有没有 cid」，而 `normalizeVideo` 把 cid 丢了，
+// 于是 `bili_feed` / `bili_video` 刷半天一条痕都不留，主人没法核她到底看没看。
+{
+  const video = { ...VIDEO };
+  const ledger = emptyLedger();
+  const { client } = fakeClient();
+  await reportHistory({ client, cfg: {}, video, ledger, topic: '心理学', source: 'popular' });
+  assert.equal(ledger.watched.length, 1, '报历史要顺手写一条 watched');
+  assert.equal(ledger.watched[0].bvid, video.bvid);
+  assert.equal(ledger.watched[0].cid, video.cid, 'cid 要落进留痕，方便回头核');
+  assert.equal(ledger.watched[0].source, 'popular');
+  assert.equal(ledger.watched[0].topic, '心理学');
+  assert.equal(ledger.watched[0].reported, true);
+  assert.equal(todayWatched(ledger).length, 1);
+  assert.equal(recentWatched(ledger, 5).length, 1);
+
+  // 同一天重复刷到同一条：不新增条目，只刷新时间（刷列表会反复看到同一批）。
+  await reportHistory({ client, cfg: {}, video, ledger, source: 'video' });
+  assert.equal(ledger.watched.length, 1, '同一天同一条不重复占位');
+
+  // 没 cid（`search` 搜出来的就是）报不进 B 站，但**本机照样留痕**。
+  const noCid = emptyLedger();
+  const outcome = await reportHistory({ client, cfg: {}, video: { ...video, cid: 0 }, ledger: noCid, source: 'search' });
+  assert.equal(outcome.reported, false);
+  assert.equal(noCid.watched.length, 1, '报不进 B 站也要在本机留痕');
+  assert.equal(noCid.watched[0].reported, false);
+
+  // 不给 ledger 就不留痕 —— 老调用点不受影响，也不该被强加副作用。
+  const untouched = emptyLedger();
+  await reportHistory({ client, cfg: {}, video });
+  assert.equal(untouched.watched.length, 0);
+
+  // `normalizeVideo` 必须保住 cid：丢了它，「刷列表顺便报历史」就全线哑火
+  //（popular / ranking / rcmd 的原始条目其实都自带 cid，白丢的）。
+  const proto = Object.create(BiliClient.prototype);
+  const normalized = proto.normalizeVideo({ bvid: 'BV1xx', aid: 1, title: 't', cid: 12345, owner: { name: 'up' }, stat: {} });
+  assert.equal(normalized.cid, 12345, 'normalizeVideo 不能把 cid 丢掉');
+  assert.equal(proto.normalizeVideo({ bvid: 'BV1yy', aid: 2, title: 't', pages: [{ cid: 999 }] }).cid, 999, '分P 里的 cid 也要兜住');
+  assert.equal(proto.normalizeVideo({ bvid: 'BV1zz', aid: 3, title: 't' }).cid, 0, '真没有 cid 就给 0（不硬编）');
+}
+
+console.log('✓ 三连测试通过：分数/每日上限/去重门槛、收藏夹分类、逐步容错、浏览记录契约、刷视频留痕');

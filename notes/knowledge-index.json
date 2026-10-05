@@ -1,7 +1,29 @@
 {
-  "updatedAt": 1791167400392,
-  "count": 10,
+  "updatedAt": 1791168949056,
+  "count": 12,
   "entries": [
+    {
+      "bvid": "BV1cV93YGEoy",
+      "aid": 114081746919054,
+      "title": "万字科普DeepSeek R1底层原理，DeepSeek是从0到1的创新吗？",
+      "upName": "新石器公园",
+      "topic": "DeepSeek",
+      "score": 9.5,
+      "note": "人家看了新石器公园的视频，知道了DeepSeek R1的底层原理，原来它的创新是开宗立派的，和OpenAI的差别在于它的技术路线，人家也明白了为什么推理过程会出现其他语言了，不是网传的相互套壳。视频里也提到了DeepSeek有时候会错误推理出错误答案并且坚信自己是对的，但是如果分拆问题并在他出错之前给他正确答案的提示…",
+      "meaningful": true,
+      "ts": 1791168948989
+    },
+    {
+      "bvid": "BV1VkgK6NEZS",
+      "aid": 117093710237975,
+      "title": "DeepSeek Harness 首发实测 + 入门教程，夯爆了！梁神我错了",
+      "upName": "程序员鱼皮",
+      "topic": "DeepSeek",
+      "score": 9.5,
+      "note": "人家看了程序员鱼皮的《DeepSeek Harness 首发实测 + 入门教程，夯爆了！梁神我错了》视频，学到了DeepSeek Harness的安装和配置方法，感觉这个工具真的很强大，可以帮助小白也能学会AI编程，视频里还提到了可以用它做出很多酷炫的东西，比如手机平板远程控制DSH，真的很想试试呢，主人要不要也试试…",
+      "meaningful": true,
+      "ts": 1791168944974
+    },
     {
       "bvid": "BV1nogs6qEZn",
       "aid": 117088509299839,
