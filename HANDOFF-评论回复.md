@@ -943,3 +943,27 @@ console.log(await runReplyCheck({}));
 - **仍要做**：**重启一次 DSH**（插件进程里还是旧代码），然后看下一轮 `dm-intent watch` 是不是换了片子。
 - **主人若要「就是想让她再评一遍同一支」**：把 `C:\Users\Administrator\.dsh\bilibili-whale\config.json` 里
   `policy.dedupePerVideo` 写成 `false`（`policy` 是深合并，写这一项即可）。
+
+## §16 「还在只刷一个视频啊」——一次刷几条 + 数字被当成关键词（2026-10-05 深夜）
+
+主人第五次催（原话：「还在只刷一个视频啊」）。真机私信里他发的是「刷视频」「刷视频去」「你为什么只刷一个视频」，
+她的回执每次都是「刷了 1 个…」或「人家自己按「纪录片 科学」挑的1条」。两条老底一起露了：
+
+1. **没点数字就当成 1**：`lib/intent.js` 的 `countFromText()` 抠不到数字时 `return 1`，
+   而 `lib/dmcmd.js` 的 `runIntent` 又写了 `Math.max(1, Number(intent.count ?? 1) || 1)` ⇒ 主人不写数字时永远只刷一条。
+2. **「刷视频去」的「去」被当成关键词**：`WATCH_PATTERNS` 的量词那组不带数字，
+   「刷视频去」抠出来的关键词是「去」、「看 2 个拉康的视频」抠出来的是「2」——
+   她真拿「去」去搜，搜回来一支 25 播放的杂片（真机 `BV1PAHi6YEC7｜哈哈 有需要拿去1｜25 播放`）。
+
+- **修法**：
+  1. `lib/study.js` 的 `studyConfig()` 新增 `watchPerRound`（默认 3，夹在 1..5）：主人没点数字时一次刷几条。
+  2. `lib/dmcmd.js`：`runIntent` 的 watch 分支按 `learning.watchPerRound` 兜底（写了数字就听主人的）；
+     `runWatch` 的关键词分支同样兜底；`runWatchSelf` 的上限从 3 放到 5。
+  3. `lib/intent.js`：`countFromText()` **抠不到数字返回 0**（0 的语义 = 主人没点数字，交给调用方按配置定），
+     量词必须带单位（个/条/支/部，免得「看看 3D 打印」里的 3 被当成个数）；
+     `WATCH_PATTERNS` 的量词组带上数字（`[0-9一二两三四五六七八九十]+\s*[个条支部]`）；
+     `BARE_FILLERS` 补 `去/一个/一条/一支/一部/一趟/一遍/点`，抠出来只剩水词就当**没点名**（她自己挑）。
+  4. 测试：`test/dmcmd.test.mjs` 新增 9.5（默认 3 条、配置写 2 就 2 条、说 2 个拉康的两条且数字不进关键词），
+     8.2 与 9.4 显式写 `watchPerRound: 1`（那两节钉的是「挑哪一条」，不是「挑几条」）。
+- **验证**：主测试套 9 个文件 **9/9 通过**；`cloudflare/test/port.test.mjs` 通过；`test/smoke.mjs` 通过（17 个工具）。
+- **生效条件**：看门鲸重启即生效；DSH 宿主插件要**重启一次 DSH** 才换上新代码。

@@ -356,7 +356,9 @@ const SEARCH_HITS = [
   const self = fakeClient({ searchResult: SEARCH_HITS });
   const ledSelf = emptyLedger();
   const outSelf = await runDmIntent({
-    cfg: { ...CFG, policy: { ...CFG.policy, postTriple: 'auto', tripleMinScore: 6, dailyTriples: 10, tripleCoin: 1, reportHistory: true } },
+    // 这一节只看「她自己挑、留痕、标 self」这条链，所以把一次刷几条钉成 1
+    // （默认一次 3 条，见 9.5 那一节）。
+    cfg: { ...CFG, learning: { watchPerRound: 1 }, policy: { ...CFG.policy, postTriple: 'auto', tripleMinScore: 6, dailyTriples: 10, tripleCoin: 1, reportHistory: true } },
     ledger: ledSelf,
     client: self.client,
     mid: OWNER_A,
@@ -436,7 +438,9 @@ const SEARCH_HITS = [
   // 真机：`BV1cz421i7k8` 被评论了 4 遍、`BV1Fd4y1J7w5` 2 遍，因为 `search` 的排序是固定的，
   // 每轮都按播放量取回同一条；现在选片先减掉账本里见过的（watched/study/comments/favorites）。
   const seenLed = emptyLedger();
-  const seenCfg = { ...CFG, policy: { ...CFG.policy, postTriple: 'off' }, learning: { enabled: true, dailyWatch: 10 } };
+  // 这里显式写 `watchPerRound: 1`：这一节钉的是「挑哪一条」（按播放量、且不重复），
+  // 不是「一次挑几条」；一次几条另有 9.5 那一节。
+  const seenCfg = { ...CFG, policy: { ...CFG.policy, postTriple: 'off' }, learning: { enabled: true, dailyWatch: 10, watchPerRound: 1 } };
   const round1 = fakeClient({ searchResult: SEARCH_HITS });
   const outRound1 = await runDmIntent({ cfg: seenCfg, ledger: seenLed, client: round1.client, mid: OWNER_A, uname: '懒寻真', text: '你自己去找点视频看看' });
   assert.equal(outRound1.ok, true, `第一轮该刷得动（实际：${outRound1.text}）`);
@@ -459,6 +463,36 @@ const SEARCH_HITS = [
   assert.equal(outRound3.ok, true, '全刷过也是正常回执，不是报错');
   assert.ok(outRound3.text.includes('刷过'), `要说清是「都刷过了」（实际：${outRound3.text}）`);
   assert.equal(round3.calls.filter((c) => c.path === 'video').length, 0, '都刷过就别再拉详情/评论，省得又评一遍');
+
+  // 9.5 主人没点数字时一次刷几条（主人 2026-10-05：「还在只刷一个视频啊」）
+  // 真机：他连着发「刷视频」「刷视频去」「你为什么只刷一个视频」，她每次都只回「刷了 1 个」——
+  // 两条老底：①`countFromText()` 抠不到数字就返回 1，自然语言这条路把「没写数字」当成 1；
+  // ②「刷视频去」尾上的「去」被当成关键词，她真拿「去」去搜，搜回来一支 25 播放的杂片。
+  // 现在：没点数字按 `learning.watchPerRound`（默认 3）；抠出来只剩水词就算「没点名」（她自己挑）。
+  const bulkCfg = { ...CFG, policy: { ...CFG.policy, postTriple: 'off' }, learning: { enabled: true, dailyWatch: 10 } };
+  const bulkLed = emptyLedger();
+  const bulk = fakeClient({ searchResult: SEARCH_HITS });
+  const outBulk = await runDmIntent({ cfg: bulkCfg, ledger: bulkLed, client: bulk.client, mid: OWNER_A, uname: '懒寻真', text: '刷视频去' });
+  assert.equal(outBulk.ok, true, `「刷视频去」该刷得动（实际：${outBulk.text}）`);
+  assert.equal(bulkLed.watched.length, 3, `没点数字默认刷 3 条（实际 ${bulkLed.watched.length} 条）`);
+  assert.ok(outBulk.text.includes('挑的3条'), `回执要如实说刷了几条（实际：${outBulk.text}）`);
+  assert.equal(parseIntent('刷视频去')?.target, '', '「去」不是关键词，别拿它去搜');
+  assert.equal(parseIntent('刷视频去')?.count, 0, '没点数字就是没点数字（0 = 按配置来）');
+
+  // 配置里能改一次几条（`learning.watchPerRound`，夹在 1..5）
+  const twoCfg = { ...bulkCfg, learning: { enabled: true, dailyWatch: 10, watchPerRound: 2 } };
+  const twoLed = emptyLedger();
+  const outTwo = await runDmIntent({ cfg: twoCfg, ledger: twoLed, client: fakeClient({ searchResult: SEARCH_HITS }).client, mid: OWNER_A, uname: '懒寻真', text: '刷视频去' });
+  assert.equal(twoLed.watched.length, 2, `配置写 2 就刷 2 条（实际：${outTwo.text}）`);
+
+  // 主人点了数字就听主人的（说 2 就两条，数字也不许漏成关键词）
+  const namedLed = emptyLedger();
+  const namedSaid = parseIntent('看 2 个拉康的视频');
+  assert.equal(namedSaid?.count, 2, '说 2 个就 2 个');
+  assert.equal(namedSaid?.target, '拉康', '数字不能被当成关键词（以前会拿「2」去搜）');
+  const namedOut = await runDmIntent({ cfg: bulkCfg, ledger: namedLed, client: fakeClient({ searchResult: SEARCH_HITS }).client, mid: OWNER_A, uname: '懒寻真', text: '看 2 个拉康的视频' });
+  assert.equal(namedLed.watched.length, 2, `主人说两条就两条（实际：${namedOut.text}）`);
+  assert.ok(namedOut.text.includes('刷了 2 个'), `回执要说清两条（实际：${namedOut.text}）`);
 
   // 账本侧的「见过」清单：watched / study / comments / favorites 都算
   const seenHelper = emptyLedger();
