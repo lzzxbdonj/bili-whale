@@ -460,7 +460,7 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸（**第十一轮重启过两次**，现在跑的是含「付费回主人 / 分享式评论 / 热闹动态 / 免费脑子节流重试 / 云端对账省 KV 写」的新代码）：pid **21412**（2026-10-05 14:00:25 起），
+- 看门鲸（**第十一轮重启过三次**，现在跑的是含「付费回主人 / 分享式评论 / 热闹动态 / 免费脑子节流重试 / 云端对账省 KV 写 / 配置自愈」的新代码）：pid **29148**（2026-10-05 14:37:12 起），
   命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
   cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（手动 `Start-Process` 会把这两个文件**覆盖**重写；它自己换命时是**追加**）。上一只是 pid 30520（13:34:46 起，14:00 杀掉）。
   **心跳**：`statePath('watchdog.json')` 每轮刷新（`bili_status` 之外，调试台「状态」也读它；`cloudflare/src/patrol.js` 的待命闸读的是云端 KV 里的 `meta.localSeenAt`）。
@@ -657,4 +657,31 @@ console.log(await runReplyCheck({}));
     老代码不知道指纹/跳过，会照旧每 5 分钟推一次 —— 靠上面第 5 刀在云端拦掉。**要彻底省，得重启一次 DSH**（主人决定）。
   - **额度恢复之前**：云端两条线都不会碰 B 站（本机看门鲸照常干活，它用的是本机 `ledger.json`，安全的那条）。
     恢复之后第一次对账会把新配置/新账本自动补上去（没落盘的指纹没记，所以会自动重试），**不用手动推**。
+
+## 8. 2026-10-05 下午（第二轮搬家）：云端自愈 + 仓库转公开 + 每 5 分钟
+
+主人两句话定了这一段的方向：**「开始往云端搬项目，观察模式关掉」** → 随后选了**「仓库转公开 + 每 5 分钟」**和**「现在就关电脑，云端按旧政策先跑」**。
+
+1. **观察模式已关**（线上 Worker `84f43e19-1d46-4c88-9855-8d1edf13faaf`，`wrangler.toml:48` `OBSERVE_ONLY="false"`）：
+   `bili_cloud op=status` → 「观察模式：关（按策略真发）」。Worker 自己仍 `loggedIn:false`（出口 IP 被 B 站 -412），
+   **真正会动手的是 GH Actions 的 `cloud/run.mjs`**（它根本不看 `observeOnly`）。
+2. **配置自愈（这一轮最重要的新增）**：KV 里那份 `state:config` 会盖住代码默认值，本机一关机就没人推新政策了。
+   新增 `cfgVersion`：`lib/config.js` DEFAULTS 与 `cloudflare/src/policy.js` 都是 `cfgVersion: 1`；
+   `lib/cloudsync.js` 的 `cloudConfigPatch()` 会带上 `patch.cfgVersion = Number(cfg.cfgVersion)`；
+   `cloud/run.mjs` 新增 `healConfig(state)`，在「本机在岗让位」与 `storeWritable()` 两道闸**之后**跑：
+   云端 `state.config.cfgVersion` 比仓库默认值旧 → `POST /config` 用仓库默认值重推 `policy/feed/learning/dailyDynamic` 四组
+   （日志 `云端配置是旧的（版本 x → y）：已用仓库默认值重推一遍`；没落盘就下一轮再试）。
+   ⇒ **以后改 `policy/feed/learning/dailyDynamic` 默认值，记得 `cfgVersion` +1**，否则云端不会自愈。
+3. **频率 `*/30` → `*/5`**（`.github/workflows/whale.yml` 的 cron），前提是仓库已**转公开**（Actions 分钟数不再受 2000 分钟/月限制）。
+   同时 `cloud/run.mjs` 末尾加了「没事发生的轮次不写日志」：`quiet = line === '' && TASK === 'patrol'`，
+   只留每小时一声「无事发生（巡检还在跑）」（`new Date().getUTCMinutes() < 10`），
+   否则 `*/5` 光 `/log` 就 288 写/天，加上每轮 `/probe` 的 nonce 会顶满 1000 写/天 的免费额度。
+4. **仓库转公开**：`https://github.com/lzzxbdonj/bili-whale`（`gh repo view` 回 `isPrivate:false`）。
+   转公开前扫过：`.gitignore` 已挡 cookie/密钥文件；历史里只有测试夹具（`SESSDATA=abc%2Cdef…`）和占位符
+   （`${{ secrets.WHALE_TOKEN }}`、文档里的 `DEEPSEEK_API_KEY=sk-...`）；**真钥匙 `sk-ec3f9c4d…` 全历史无命中**，
+   工作区树再扫一遍也是「干净」。
+5. **提交**：`9ee3ba8`（自愈 + `*/5` + 省日志，7 files +63/−9）已 push；`52336ce`（关观察模式）、`2be833a`（HANDOFF 更新）。
+   插件目录 `C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale` 已同步（5 个关键文件 MD5 `same`）；
+   看门鲸重启为 pid **29148**（14:37:12）。
+6. **还没来得及验的**：KV 免费写额度要到 **00:00Z（北京 08:00）** 才恢复，所以「云端自己顶上 + `healConfig` 真跑一遍」只能等那时看 GH 日志。
 
