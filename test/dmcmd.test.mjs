@@ -63,6 +63,10 @@ function fakeClient({ searchResult = null, failSearch = '', failVideo = '', hotC
         calls.push({ path: 'historyReport', ...options });
         return { aid: options.aid, cid: options.cid, progress: options.progress };
       },
+      dynamicCreate: async (text, options) => {
+        calls.push({ path: 'dynamicCreate', text, mentions: options?.mentions ?? [] });
+        return { dyn_id_str: 'DYN-1' };
+      },
       videoLike: async () => { calls.push({ path: 'videoLike' }); return {}; },
       videoCoin: async () => { calls.push({ path: 'videoCoin' }); return {}; },
       favFolders: async () => { calls.push({ path: 'favFolders' }); return [{ id: 7, title: '小鲸鱼娘的学习收藏' }]; },
@@ -421,4 +425,76 @@ const SEARCH_HITS = [
   assert.equal(selfWatchedToday(ledCap).length, 2, '额度只数自己刷的：master 那条不算');
 }
 
-console.log('✓ 私信测试通过：斜杠命令照旧、大白话也认（搜/自己刷/点名刷/转达）、否定句与问方法一律不动手、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、认不出就不猜、一条私信多个 BV 号全看、自己刷有每日上限而主人点名的不算');
+// ── 10. 第十轮：主人说「去发学习动态」就真发（2026-10-05 真机事故）────────────
+//
+// 主人连着两次私信「那你现在去发学习动态吧」，她把「学习」当成「去看片」、把「动态」当关键词，
+// 去搜了两条名字里带「动态」的视频回来交差（《动态功能介绍》《C++动态规划》），一条动态没发。
+// 这一节钉住修法：①「发动态」必须被认出来（而且不能认成 watch）；②认出来就**真调 dynamicCreate**；
+// ③主人的指令要能越过往日限「今天已经发过」；④说「别发」就不许发。
+{
+  // 10.1 就是主人那句话 —— 认成 dynamic，不许再是 watch
+  const said = parseIntent('那你现在去发学习动态吧');
+  assert.equal(said?.name, 'dynamic', `主人这句得认成「发动态」（实际：${JSON.stringify(said)}）`);
+  for (const line of ['去发条学习动态', '发个学习动态', '发动态', '发一条动态', '更新一下动态', '发布个动态']) {
+    assert.equal(parseIntent(line)?.name, 'dynamic', `这句也得认成「发动态」：${line}`);
+  }
+  // 但「刷动态」「看动态」仍旧是刷视频，不能反过来把主人想刷的时候当成要发
+  assert.equal(parseIntent('刷动态')?.name, 'watch', '「刷动态」是去看片，不是发动态');
+  assert.equal(parseIntent('看看动态')?.name, 'watch', '「看动态」同上');
+  // 否定句一律不动手
+  assert.equal(parseIntent('别发动态了'), null, '说「别发」就不发');
+  assert.equal(parseIntent('先不发动态了'), null, '「先不发」也不发');
+  // 主人自己写好正文：冒号后面那截就是要发的话
+  assert.equal(parseIntent('发个动态：今天学了拉康的镜像阶段').target, '今天学了拉康的镜像阶段', '冒号后面那截当正文');
+
+  // 10.2 真发：走 dynamicCreate，进账本，回执说实话
+  const cfg = {
+    ...CFG,
+    dailyDynamic: { enabled: true, at: '20:30', templates: ['今天也在认真学习呢'] },
+    policy: { ...CFG.policy, postDynamic: 'auto', dailyDynamics: 1, blockKeywords: [] },
+  };
+  const led = emptyLedger();
+  const { client, calls } = fakeClient();
+  const out = await runDmIntent({ cfg, ledger: led, client, mid: OWNER_A, uname: '懒寻真', text: '那你现在去发学习动态吧' });
+  assert.equal(out?.ok, true, `主人的话要真发出去（实际：${out?.text}）`);
+  const created = calls.find((c) => c.path === 'dynamicCreate');
+  assert.ok(created !== undefined, '必须真调 dynamicCreate（这才是「发了」）');
+  assert.ok(calls.every((c) => c.path !== 'search'), '不许再去搜「动态」相关的视频');
+  assert.ok(String(created.text).length > 0, '正文不能是空的');
+  assert.equal(led.dynamics.length, 1, '要进账本（不然每天一条的上限就白算了）');
+  assert.ok(out.text.includes('发好啦'), `回执要说明真发了（实际：${out.text}）`);
+
+  // 10.3 主人的指令免「今天已经发过」/每日上限（force = 主人的令）
+  const led2 = emptyLedger();
+  led2.dynamics.push({ dynId: 'OLD', text: '今天已经发过的一条', date: new Date().toISOString().slice(0, 10), ts: Date.now() });
+  const again = fakeClient();
+  const outFree = await runDmCommand({
+    cfg, ledger: led2, client: again.client, mid: OWNER_A, uname: '懒寻真',
+    intent: parseIntent('再发一条动态：今天很开心的'), force: true,
+  });
+  assert.equal(outFree.ok, true, `主人点名要发就该发（实际：${outFree.text}）`);
+  assert.equal(again.calls.filter((c) => c.path === 'dynamicCreate').length, 1, '真发了第二条');
+  assert.equal(parseIntent('再发一条动态：今天很开心的').target, '今天很开心的', '正文要按主人写的来');
+
+  // 10.4 没有 force（不是主人的令）时，每天一条的上限照旧拦着 —— 安全线不能松
+  const blocked = fakeClient();
+  const outBlocked = await runDmCommand({
+    cfg, ledger: led2, client: blocked.client, mid: OWNER_A, uname: '懒寻真',
+    intent: parseIntent('发个动态：今天也开心'), force: false,
+  });
+  assert.equal(outBlocked.ok, false, '不带 force 时「今天已经发过」要拦住');
+  assert.equal(blocked.calls.length, 0, '拦下了就一个接口都别打');
+
+  // 10.5 总开关 off：主人的令也拦（账号安全线，主人点头也不越）
+  const offed = fakeClient();
+  const outOff = await runDmCommand({
+    cfg: { ...cfg, policy: { ...cfg.policy, postDynamic: 'off' } },
+    ledger: emptyLedger(), client: offed.client, mid: OWNER_A, uname: '懒寻真',
+    intent: parseIntent('发个动态'), force: true,
+  });
+  assert.equal(outOff.ok, false);
+  assert.ok(outOff.text.includes('postDynamic'), `要说清是总开关拦的（实际：${outOff.text}）`);
+  assert.equal(offed.calls.length, 0);
+}
+
+console.log('✓ 私信测试通过：斜杠命令照旧、大白话也认（搜/自己刷/点名刷/转达/发动态）、否定句与问方法一律不动手、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、/动态 真发动态并进账本、认不出就不猜、一条私信多个 BV 号全看、自己刷有每日上限而主人点名的不算');
