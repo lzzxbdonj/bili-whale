@@ -20,6 +20,7 @@ import {
   deepMerge,
   getJson,
   loadState,
+  putJson,
   readCloudLog,
   saveCookies,
   saveLedger,
@@ -414,18 +415,27 @@ export default {
           const nextLedger = mergeLedger(state.ledger, body.ledger ?? {});
           const nextPending = mergePending(state.pending, body.pending ?? []);
           const nextMeta = mergeMeta(state.meta, { ...(body.meta ?? {}), at: new Date().toISOString() });
-          await saveLedger(env, nextLedger);
-          await savePending(env, nextPending);
-          await saveMeta(env, nextMeta);
+          // 每一次写都把结果收起来：KV 免费额度（1000 写/天）见底时 `kv.put` 会失败，
+          // 而 store.js 的 putJson 是「吞掉异常返回 false」——不检查的话，
+          // 客户端会以为「交账本成功」，实际云端还停在几小时前的旧快照上
+          // （2026-10-05 的翻车：云端拿旧账本，同一条评论被重复回复）。
+          const writes = [];
+          writes.push(await saveLedger(env, nextLedger));
+          writes.push(await savePending(env, nextPending));
+          writes.push(await saveMeta(env, nextMeta));
           let cookieKeys = Object.keys(state.cookies ?? {});
           if (body.cookies !== undefined && body.cookies !== null && Object.keys(body.cookies).length > 0) {
             const merged = mergeCookies(state.cookies, body.cookies);
-            await saveCookies(env, merged);
+            writes.push(await saveCookies(env, merged));
             cookieKeys = Object.keys(merged);
           }
-          await appendCloudLog(env, `state merged by ${String(body.meta?.writer ?? 'unknown')}（ledger：评论 ${nextLedger.comments.length} / 学习 ${nextLedger.study.length}，草稿 ${nextPending.length}）`);
+          const persisted = writes.every((flag) => flag === true);
+          // 这里**故意不写 state:log**：每交一次账本就追加一行，是 KV 写额度里最没必要的那一档
+          // （云端跑完动作会单独 POST /log 报一句，那条才值得留）。
           return json({
             ok: true,
+            persisted,
+            warning: persisted === true ? '' : 'KV 写不进去（免费写额度见底？）：这份状态没有落盘',
             mergedAt: new Date().toISOString(),
             ledger: {
               comments: nextLedger.comments.length,
@@ -474,8 +484,30 @@ export default {
       if (path === '/heartbeat') {
         const now = Date.now();
         state.meta = { ...state.meta, localSeenAt: now, localWriter: 'local' };
-        await saveMeta(env, state.meta);
-        return json({ ok: true, localSeenAt: now, at: new Date(now).toISOString() });
+        const persisted = await saveMeta(env, state.meta);
+        return json({ ok: true, persisted, localSeenAt: now, at: new Date(now).toISOString() });
+      }
+
+      // —— 探针：KV 今天还能不能写？云端（GitHub Actions）**每轮开工前先问一次**。
+      //
+      // 为什么要这么啰嗦：KV 免费额度（1000 写/天）见底后，putJson 会静默失败，
+      // 云端会拿着几小时前的旧账本继续回复陌生人 —— 旧账本认不出「这条已经回过」，
+      // 同一条评论就被重复回（2026-10-05 亲眼看到 6 条「人家记住啦」）。
+      // 所以：写一个随机 nonce → 立刻读回来 → 对得上才允许这一轮动手。
+      if (path === '/probe') {
+        const body = await readJsonBody(request);
+        const nonce = String(body?.nonce ?? Date.now());
+        const wrote = await putJson(env?.WHALE_KV, 'state:probe', { nonce, at: new Date().toISOString() });
+        const back = await getJson(env?.WHALE_KV, 'state:probe', null);
+        const persisted = wrote === true && back?.nonce === nonce;
+        return json({
+          ok: persisted,
+          persisted,
+          wrote: wrote === true,
+          nonce,
+          backNonce: back?.nonce ?? null,
+          at: new Date().toISOString(),
+        });
       }
 
       if (path === '/config') {        if (request.method === 'GET') {
@@ -486,9 +518,14 @@ export default {
           if (body === null) return fail('请求体必须是 JSON 对象');
           const overrides = await varsConfigOverride(env);
           const next = deepMerge(overrides, body);
-          await saveUserConfig(env, next);
+          const persisted = await saveUserConfig(env, next);
           await appendCloudLog(env, `config updated: ${JSON.stringify(body)}`);
-          return json({ ok: true, config: deepMerge(deepMerge(DEFAULTS, varsConfig(env)), next) });
+          return json({
+            ok: true,
+            persisted,
+            warning: persisted === true ? '' : 'KV 写不进去（免费写额度见底？）：配置没有落盘',
+            config: deepMerge(deepMerge(DEFAULTS, varsConfig(env)), next),
+          });
         }
         return fail('只支持 GET / POST', 405);
       }

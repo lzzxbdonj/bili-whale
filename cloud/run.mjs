@@ -89,8 +89,48 @@ async function pullState() {
   return { cookies, pending: state.pending ?? [], meta: state.meta ?? {} };
 }
 
+/** 干完的账本/草稿指纹：没变就不推回云端（KV 免费写额度只有 1000/天）。 */
+function stateSignature(ledger, pending) {
+  const count = (list) => (Array.isArray(list) ? list.length : 0);
+  const drafts = (Array.isArray(pending) ? pending : [])
+    .map((draft) => `${draft?.id ?? ''}:${draft?.approved === true ? 'a' : ''}${draft?.posted === true ? 'p' : ''}`)
+    .join(',');
+  return [
+    Number(ledger?.lastActionTs ?? 0) || 0,
+    count(ledger?.comments),
+    count(ledger?.replies),
+    count(ledger?.dynamics),
+    count(ledger?.study),
+    count(ledger?.favorites),
+    count(ledger?.dms),
+    JSON.stringify(ledger?.daily ?? {}),
+    drafts,
+  ].join('|');
+}
+
+/**
+ * 云端 KV 今天还能不能写？**开工前先问一次。**
+ *
+ * 为什么（2026-10-05 的翻车，主人亲眼看到）：Cloudflare KV 免费额度是 1000 写/天，
+ * 额度见底后 `kv.put` 静默失败，而 `POST /state` 照样回 200 —— 于是云端这一轮拿的是
+ * 几小时前的旧账本，旧账本认不出「这条评论已经回过」，同一条评论被**重复回复**
+ * （主人看到同一条评论下面 6 条一模一样的「人家记住啦」）。
+ *
+ * 规矩：先往 KV 写一个随机 nonce 再读回来，对得上才允许这一轮动手。
+ * 对不上就整轮不碰 B 站 —— 宁可少干一点，也不能在评论区刷屏。
+ */
+async function storeWritable() {
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const result = await panel('/probe', { method: 'POST', body: { nonce } });
+    return { ok: result?.persisted === true, nonce, result };
+  } catch (issue) {
+    return { ok: false, nonce, reason: String(issue?.message ?? issue) };
+  }
+}
+
 /** 把干完的结果推回遥控台（cookie 可能被 B 站刷新过，必须带回去）。 */
-async function pushState({ pending, meta }) {
+async function pushState({ pending, meta, since }) {
   const { loadLedger, saveLedger } = await import('../lib/ledger.js');
   const { loadSession } = await import('../lib/cookies.js');
   const ledger = loadLedger();
@@ -107,8 +147,15 @@ async function pushState({ pending, meta }) {
     say('（dry-run：不写回遥控台）');
     return payload;
   }
-  await panel('/state', { method: 'POST', body: payload });
-  return payload;
+  if (since !== undefined && since === stateSignature(ledger, pending)) {
+    say('状态跟开跑时一模一样，省一次 KV 写（不推回遥控台）');
+    return { ...payload, skipped: true };
+  }
+  const result = await panel('/state', { method: 'POST', body: payload });
+  if (result?.persisted === false) {
+    say('⚠ 推回去的状态没落盘：云端 KV 写不进去（免费写额度见底？）');
+  }
+  return { ...payload, persisted: result?.persisted !== false };
 }
 
 /** 统一跑一个工具，把错误变成一行日志而不是崩溃。 */
@@ -309,6 +356,8 @@ async function brainCheck() {
   const brain = brainConfig(cfg);
   say(`脑子配置：provider=${brain.provider} · model=${brain.model || '(预设)'} · fallback=${brain.fallback === '' ? '(空)' : brain.fallback} · paid=${brain.paid === '' ? '(空)' : brain.paid} · enabled=${brain.enabled}`);
   const order = [brain.provider, ...String(brain.fallback ?? '').split(',').map((item) => item.trim()).filter((item) => item !== '')];
+  // 付费那家也要点一次名：回主人那条线就靠它（runner 上的 key 来自 secrets 的 DEEPSEEK_API_KEY）。
+  if (brain.paid !== '') order.push(brain.paid);
   for (const provider of [...new Set(order)]) {
     const t0 = Date.now();
     const text = await askBrain(
@@ -357,8 +406,24 @@ async function main() {
     return;
   }
 
+  // 动手之前先确认「写完还读得回来」。
+  //
+  // 主人 2026-10-05 亲眼看到的翻车：Cloudflare KV 免费写额度是 1000/天，中午写光之后
+  // `kv.put` 就静默失败了，而拉下来的账本还是几小时前的 —— 云端照着旧账本干活，
+  // 认不出「这条评论已经回过」，于是同一条评论下面被回了 6 条一模一样的「人家记住啦」。
+  // 现在先写个 nonce 再读回来验证；写不进去就**整轮不碰 B 站**，宁可少干，不能刷屏。
+  const writable = await storeWritable();
+  if (writable.ok !== true) {
+    say(`云端 KV 写不进去（${writable.reason ?? writable.result?.warning ?? '读回来的 nonce 对不上'}）→ 本轮不动作，免得拿着旧账本重复回复`);
+    return;
+  }
+  say('云端 KV 可写（nonce 读回来了）· 继续干活');
+
   const { buildBiliTools } = await import('../lib/tools.js');
   const { resolveConfig } = await import('../lib/config.js');
+  const { loadLedger } = await import('../lib/ledger.js');
+  // 开跑时的指纹：干完活要是账本跟草稿一点没变，就不必再写一次云端（省 KV 额度）。
+  const since = stateSignature(loadLedger(), state.pending);
   const tools = buildBiliTools({ pluginConfig: {} });
   const run = makeRunner(tools);
   const cfg = resolveConfig({});
@@ -432,7 +497,7 @@ async function main() {
     }
   }
 
-  const pushed = await pushState({ pending: state.pending, meta: state.meta });
+  const pushed = await pushState({ pending: state.pending, meta: state.meta, since });
   const line = summary.join(' · ');
   say(`== 结果：${line === '' ? '无事发生' : line}`);
   if (DRY !== true) {

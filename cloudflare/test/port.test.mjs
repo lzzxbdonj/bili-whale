@@ -550,7 +550,7 @@ check('普通人：24 小时窗口内（不同评论串）也拦下', () => {
   assert.ok(verdict.reasons.some((r) => r.includes('小时前刚被回过')), `reasons=${JSON.stringify(verdict.reasons)}`);
 });
 
-check('每日上限触发：评论 3 条 / 回复 10 条 / 动态 1 条', () => {
+check('每日上限触发：评论 / 回复 / 动态', () => {
   const cfg = cloneDefaults();
   cfg.policy.postVideoComment = 'auto';
   const now = farFuture();
@@ -563,7 +563,7 @@ check('每日上限触发：评论 3 条 / 回复 10 条 / 动态 1 条', () => 
   const commentVerdict = checkVideoComment({ cfg, ledger: lc, bvid: 'BVnew', message: '还想再发', now });
   assert.equal(commentVerdict.allowed, false);
   assert.ok(
-    commentVerdict.reasons.some((r) => r.includes('今日视频评论已达上限 3 条')),
+    commentVerdict.reasons.some((r) => r.includes(`今日视频评论已达上限 ${cfg.policy.dailyVideoComments} 条`)),
     `reasons=${JSON.stringify(commentVerdict.reasons)}`,
   );
 
@@ -574,7 +574,7 @@ check('每日上限触发：评论 3 条 / 回复 10 条 / 动态 1 条', () => 
   const replyVerdict = checkReply({ cfg, ledger: lr, bvid: 'BVnew', root: 999, message: '还想再回', toMid: 2000, toName: '新路人', now });
   assert.equal(replyVerdict.allowed, false);
   assert.ok(
-    replyVerdict.reasons.some((r) => r.includes('今日回复已达上限 10 条')),
+    replyVerdict.reasons.some((r) => r.includes(`今日回复已达上限 ${cfg.policy.dailyReplies} 条`)),
     `reasons=${JSON.stringify(replyVerdict.reasons)}`,
   );
 
