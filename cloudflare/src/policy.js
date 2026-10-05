@@ -79,6 +79,12 @@ export const DEFAULTS = {
     dedupePerVideo: true,
     /** 评论/回复时自动补上「@两位主人」（主人要求：出去刷视频留言一定要 @ 到他俩）。 */
     mentionOwners: true,
+    /**
+     * 回复别人的评论时，还要不要**自动**补 @主人。
+     * 主人 2026-10-05：「评论不要每一条回复都带上 @」——默认 false：
+     * 回帖就正常回帖，要 @ 让模型自己决定（提示词里允许它偶尔点名），不再每条都挂尾巴。
+     */
+    mentionOwnersOnReply: false,
     /** 允许关注动作（默认只允许关注主人）。 */
     allowFollow: true,
     /** 是否允许关注主人以外的人（默认否）。 */
@@ -128,6 +134,11 @@ export const DEFAULTS = {
     apiKey: '',
     /** 免费模型没答上来时，悄悄退回主人自己的 key（有 key 才生效）。 */
     fallback: 'deepseek',
+    /**
+     * 「付费那家」是谁：主人 2026-10-05 要求「回复主人的时候用付费模型」——
+     * 回主人时 `askBrain(cfg, { prefer: 'paid' })` 就先用这家（要配好 key，没 key 自然跳过）。
+     */
+    paid: 'deepseek',
     maxTokens: 300,
     /** 0 = 用那家预设的温度（llama 那类模型在 1.3 会胡言乱语，别乱调高）。 */
     temperature: 0,

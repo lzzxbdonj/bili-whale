@@ -1095,7 +1095,8 @@ await checkAsync('commentAdd / threadReplies / msgReplies / video / tags', async
             {
               id: 1,
               user: { mid: 42, nickname: '路人' },
-              item: { subject: '视频', source_content: '原话' },
+              // 真实形状：source_content 是对方说的，root_reply_content（= title）是她自己原来那条。
+              item: { business: '评论', subject_id: 5, source_id: 8, title: '人家原话', root_reply_content: '人家原话', source_content: '原话' },
               reply: { rpid: 8, oid: 5, ctime: 1700000000, content: { message: '回复你' } },
             },
           ],
@@ -1137,8 +1138,11 @@ await checkAsync('commentAdd / threadReplies / msgReplies / video / tags', async
   assert.equal(inbox.items[0].mid, 42);
   assert.equal(inbox.items[0].uname, '路人');
   assert.equal(inbox.items[0].message, '回复你');
-  assert.equal(inbox.items[0].myMessage, '原话');
-  assert.equal(inbox.items[0].subject, '视频');
+  assert.equal(inbox.items[0].myMessage, '人家原话', 'myMessage 取 root_reply_content（她自己原来那条）');
+  assert.equal(inbox.items[0].subject, '', 'title 是「被回复的评论」，不该当 subject');
+  assert.equal(inbox.items[0].aid, 5, '视频 oid 取 subject_id');
+  assert.equal(inbox.items[0].rpid, 8, 'rpid 取 source_id（对方那条评论）');
+  assert.equal(inbox.items[0].root, 8);
   assert.equal(inbox.items[0].ctime, '2023-11-15 06:13');
   assert.equal(inbox.items[0].ts, 1700000000000);
   assert.equal(inbox.cursor.id, 99);

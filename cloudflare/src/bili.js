@@ -603,7 +603,7 @@ export class BiliClient {
    * 发一条评论。`mentions` 里的 `@昵称` 会随 `at_name_to_mid` 交给服务端，
    * 这样评论区的 @ 才是**真 @**（对方能收到通知）——跟 lib/api.js 同一份实测结论。
    */
-  async commentAdd({ aid, message, root, parent, bvid, mentions = [], type = 1 }) {
+  async commentAdd({ aid, message, root, parent, bvid, mentions = [], type = 1, referer = '' }) {
     // type=1 视频评论；type=17 动态评论（oid 传动态 id，不是 aid）——动态底下被人回了也必须答得上。
     const oidType = Number(type) === 17 ? 17 : 1;
     const form = { type: oidType, oid: String(aid), message, plat: 1, csrf: this.csrf() };
@@ -618,10 +618,13 @@ export class BiliClient {
       nameToMid[name] = String(mid);
     }
     if (Object.keys(nameToMid).length > 0) form.at_name_to_mid = JSON.stringify(nameToMid);
-    const referer = oidType === 17
-      ? `https://t.bilibili.com/${String(aid)}`
-      : `https://www.bilibili.com/video/${bvid ?? `av${aid}`}`;
-    const body = await this.request('/x/v2/reply/add', { method: 'POST', form, referer });
+    // 专栏/动态的雪花 id 在 opus 页面上，referer 要给对，不然容易被风控。
+    const referer2 = String(referer ?? '') !== ''
+      ? String(referer)
+      : (oidType === 17
+        ? `https://t.bilibili.com/${String(aid)}`
+        : `https://www.bilibili.com/video/${bvid ?? `av${aid}`}`);
+    const body = await this.request('/x/v2/reply/add', { method: 'POST', form, referer: referer2 });
     return body?.data?.reply ?? body?.data ?? {};
   }
 
@@ -698,24 +701,48 @@ export class BiliClient {
     };
   }
 
-  /** 消息中心一条「回复我的」→ 精简结构（字段可能藏在 item.item / item.reply 里）。 */
+  /**
+   * 消息中心一条「回复我的」→ 精简结构。
+   *
+   * 字段真相（与 lib/api.js 同步，2026-10-05 用真实消息核对）：
+   * - `item.source_content` = 对方说的那句话；`item.root_reply_content` = 她自己原来那条；
+   * - `item.title` 在评论消息里是「被回复的评论」（@ 我的里才是视频标题），不能当正文乱用；
+   * - `item.business` 是中文「评论」/「动态」，`business_id` 是分区码（1/11），**不是 oid**；
+   * - 视频 oid 在 `subject_id`；动态 id 在 `uri` 的 `/opus/<id>`（雪花号，必须留字符串）。
+   */
   normalizeMsgReply(item) {
     const inner = item?.item ?? {};
     const reply = item?.reply ?? {};
     const user = item?.user ?? {};
     const content = reply?.content ?? item?.content ?? {};
-    const source = inner?.source_content ?? inner?.title ?? '';
+    const type = String(inner?.type ?? '');
+    const business = String(inner?.business ?? (type === 'album' ? '动态' : type === '' ? '' : 'reply'));
+    const uri = String(inner?.uri ?? '');
+    const bv = /\/video\/(BV[0-9A-Za-z]+)/.exec(uri);
+    const opus = /\/opus\/(\d+)/.exec(uri);
+    const subjectId = Number(inner?.subject_id ?? 0) || null;
+    const isDynamic = business === '动态' || business === 'dynamic' || opus !== null;
+    const dynamicId = opus === null ? (isDynamic ? subjectId : null) : opus[1];
+    const said = [content?.message, inner?.target_reply_content, inner?.reply_content, inner?.source_content]
+      .map((value) => stripHtml(value ?? ''))
+      .find((text) => text !== '') ?? '';
+    const mine = stripHtml(inner?.root_reply_content ?? '');
     return {
-      id: item?.id ?? reply?.rpid ?? null,
-      mid: user?.mid ?? reply?.mid ?? inner?.source_id ?? null,
+      id: item?.id ?? reply?.rpid ?? inner?.source_id ?? null,
+      mid: user?.mid ?? reply?.mid ?? null,
       uname: user?.nickname ?? user?.name ?? '',
-      message: stripHtml(content?.message ?? inner?.target_reply_content ?? inner?.reply_content ?? ''),
-      myMessage: stripHtml(typeof source === 'string' ? source : ''),
-      subject: stripHtml(inner?.title ?? inner?.subject ?? ''),
-      business: inner?.business ?? inner?.type ?? '',
-      oid: reply?.oid ?? inner?.business_id ?? inner?.source_id ?? null,
-      rpid: reply?.rpid ?? reply?.id ?? null,
-      root: reply?.root ?? inner?.root_id ?? 0,
+      message: said,
+      myMessage: mine,
+      subject: stripHtml(inner?.detail_title ?? (mine === '' ? inner?.title ?? '' : '')),
+      business,
+      type,
+      bvid: bv === null ? null : bv[1],
+      aid: isDynamic ? null : subjectId ?? reply?.oid ?? null,
+      dynamicId,
+      opusId: opus === null ? null : opus[1],
+      oid: isDynamic ? dynamicId ?? reply?.oid ?? null : subjectId ?? reply?.oid ?? null,
+      rpid: inner?.source_id ?? reply?.rpid ?? reply?.id ?? null,
+      root: inner?.root_id || reply?.root || inner?.source_id || 0,
       parent: reply?.parent ?? null,
       ctime: fmtTime(reply?.ctime ?? item?.reply_time ?? item?.ctime ?? null),
       ts: Number(reply?.ctime ?? item?.reply_time ?? 0) * 1000 || null,
@@ -748,18 +775,12 @@ export class BiliClient {
     const inner = item?.item ?? {};
     const base = this.normalizeMsgReply(item);
     const atText = stripHtml(inner?.source_content ?? '');
-    const fromUri = /\/video\/(BV[0-9A-Za-z]+)/.exec(String(inner?.uri ?? ''));
     return {
       ...base,
       // source_id = 写着这句 @ 的那条评论的 rpid —— 回它就回在同一个评论串里。
       rpid: inner?.source_id ?? base.rpid,
       root: inner?.root_id || inner?.source_id || base.root,
-      bvid: fromUri === null ? null : fromUri[1],
-      aid: inner?.subject_id ?? base.aid,
-      // 动态的 id 在 subject_id 上；`oid`（= source_id）是那条 @ 评论的 rpid，别拿它当动态 id 用。
-      dynamicId: inner?.subject_id ?? null,
       message: atText !== '' ? atText : base.message,
-      myMessage: atText !== '' ? '' : base.myMessage,
       atDetails: (inner?.at_details ?? []).map((detail) => ({ mid: detail?.mid ?? null, nickname: detail?.nickname ?? '' })),
       ctime: base.ctime !== '' ? base.ctime : fmtTime(item?.at_time ?? null),
       ts: Number(item?.at_time ?? 0) * 1000 || base.ts,
@@ -789,3 +810,4 @@ export class BiliClient {
 }
 
 export default BiliClient;
+

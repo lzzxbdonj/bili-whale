@@ -1,10 +1,11 @@
 /**
  * 「评论回复」这条链路的契约测试（2026-10-05 主人：「完善一下评论回复」）。
  *
- * 原来这条链路有三个洞，这里逐条钉住：
+ * 原来这条链路有四个洞，这里逐条钉住：
  *   1. 提示词里没有她自己的原话 / 楼上对话 / 对方是主人还是陌生人 → `buildReplyPrompt`；
  *   2. 只回主人、一轮只回一条、动态下的评论发不出去 → `pickReplyTargets` + `runInboxReplies`；
- *   3. 主人回复的 @尾巴 会把正文顶过字数上限 → `composeCommentReply` 先留位再补 @。
+ *   3. 回复不该每条都挂 @（主人 2026-10-05：「评论不要每一条回复都带上 @」）→ 默认不补尾巴；
+ *   4. 回主人要动付费脑子（主人 2026-10-05：「回复主人的时候用付费模型」）→ `prefer: 'paid'`。
  *
  * 脑子（模型）不联网：`composeCommentReply` 支持注入 `ask`，这里塞一个假模型。
  *
@@ -79,7 +80,7 @@ function target(over = {}) {
     },
   });
   assert.match(ownerPrompt.system, /对方是\*\*主人\*\*/u, '主人要认出来');
-  assert.match(ownerPrompt.system, /别再写 @/u, '主人版的 @ 由程序补，提示词要说明');
+  assert.match(ownerPrompt.system, /回复不用 @ 主人/u, '主人版的回复不自动 @（主人 2026-10-05 的要求）');
   assert.match(ownerPrompt.user, /硬核学长2077/u, 'UP 名要喂进去');
   assert.match(ownerPrompt.user, /检索式练习/u, '简介要喂进去（否则回复只能空谈）');
   assert.match(ownerPrompt.user, /人家把笔记都塞进知识库了/u, '她自己那条原话要喂进去');
@@ -100,7 +101,7 @@ function target(over = {}) {
   assert.doesNotMatch(strangerPrompt.user, /UP：/u, '动态没有 UP 行');
 }
 
-// ── 2. 主人回复：先给 @尾巴 留位，别把正文顶过上限 ────────────────────────────
+// ── 2. 回复不加 @（主人 2026-10-05 的要求）、回主人用付费模型 ──────────────────
 {
   const asked = [];
   const long = '人'.repeat(300);
@@ -109,23 +110,39 @@ function target(over = {}) {
     video: { title: 'x' },
     comment: { uname: '懒寻真', mid: OWNER, message: '在吗' },
     context: { isOwner: true },
-    ask: async (cfg, { system }) => {
-      asked.push(system);
+    ask: async (cfg, { system, prefer }) => {
+      asked.push({ system, prefer });
       return long;
     },
   });
   assert.ok(text.length <= 200, `主人回复不能超过 200 字，实际 ${text.length}`);
-  assert.match(text, /@懒寻真 @金易木木元$/u, '主人回复结尾要带上两位主人的 @');
+  assert.doesNotMatch(text, /@/u, '默认回复不带 @（主人说了：回复评论不用 @）');
+  assert.equal(asked[0].prefer, 'paid', '回主人要用付费那把脑子');
+
+  // 想恢复老样子：policy.mentionOwnersOnReply = true 时才补尾巴。
+  const tailed = await composeCommentReply({
+    cfg: { ...CFG, policy: { ...CFG.policy, mentionOwnersOnReply: true } },
+    video: { title: 'x' },
+    comment: { uname: '懒寻真', mid: OWNER, message: '在吗' },
+    context: { isOwner: true },
+    ask: async () => long,
+  });
+  assert.match(tailed, /@懒寻真 @金易木木元$/u, '打了开关才补两位主人的 @');
+  assert.ok(tailed.length <= 200, '补完 @ 也不能超字数');
 
   const strangerText = await composeCommentReply({
     cfg: CFG,
     video: { title: 'x' },
     comment: { uname: '路人甲', mid: STRANGER, message: '在吗' },
     context: { isOwner: false },
-    ask: async () => '人家只是路过看看～',
+    ask: async (cfg, { prefer }) => {
+      asked.push({ system: '', prefer });
+      return '人家只是路过看看～';
+    },
   });
   assert.equal(strangerText, '人家只是路过看看～', '陌生人回复不加主人 @');
   assert.doesNotMatch(strangerText, /@/u, '陌生人回复里不该出现 @');
+  assert.equal(asked[1].prefer, '', '回陌生人还是免费模型');
 
   const nulled = await composeCommentReply({
     cfg: CFG,
@@ -135,7 +152,39 @@ function target(over = {}) {
     ask: async () => null,
   });
   assert.equal(nulled, null, '模型不可用时返回 null（宁可不发，也别发模板垃圾话）');
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, 2, '主人那条 + 陌生人那条各问一次');
+
+  // 免费脑子会抽风（实测云端 502 / pollinations 500）：第一次没答上来要再问一次。
+  let tries = 0;
+  const retried = await composeCommentReply({
+    cfg: CFG,
+    video: { title: 'x' },
+    comment: { uname: '路人甲', mid: STRANGER, message: '在吗' },
+    context: {},
+    ask: async () => {
+      tries += 1;
+      return tries === 1 ? null : '人家在的在的～';
+    },
+  });
+  assert.equal(retried, '人家在的在的～', '脑子打嗝一次，重问一次就该答上来');
+  assert.equal(tries, 2, '失败后只重问一次，不做无限重试');
+
+  // 一直答不上来就还是 null（不能让重试变成死循环）。
+  let always = 0;
+  assert.equal(
+    await composeCommentReply({
+      cfg: CFG,
+      video: { title: 'x' },
+      comment: { uname: '路人甲', mid: STRANGER, message: '在吗' },
+      context: {},
+      ask: async () => {
+        always += 1;
+        return null;
+      },
+    }),
+    null,
+  );
+  assert.equal(always, 2, '最多问两次');
 }
 
 // ── 3. 挑人：主人优先、去重、已回过的不再回、认不出的跳过 ─────────────────────
@@ -370,4 +419,4 @@ function target(over = {}) {
   assert.equal(seen[1].referer, 'https://www.bilibili.com/video/BV16T4y1k7dB');
 }
 
-console.log('✓ 评论回复测试通过：提示词上下文、主人 @尾巴留位、挑人与额度、动态评论、失败如实回报');
+console.log('✓ 评论回复测试通过：提示词上下文、回复不带 @、回主人用付费脑子、挑人与额度、动态评论、失败如实回报');

@@ -332,11 +332,12 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
             parent: item.rpid,
             mentions: ownerMentionList(cfg),
             type: isDynamic ? 17 : 1,
+            referer: isDynamic && item.opusId ? `https://www.bilibili.com/opus/${String(item.opusId)}` : '',
           });
           const selfRpid = created?.rpid ?? null;
           recordReply(ledger, {
             bvid: detail?.bvid ?? ref?.bvid ?? null,
-            aid: isDynamic ? Number(oid) : (detail?.aid ?? ref?.aid),
+            aid: isDynamic ? oid : (detail?.aid ?? ref?.aid),
             rpid: item.rpid,
             root: verdict.rootRpid,
             targetMid: item.mid,

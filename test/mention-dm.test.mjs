@@ -53,7 +53,7 @@ assert.equal(mention.ts, 1759612345 * 1000, 'ts 要用 at_time（秒）换算');
 assert.notEqual(mention.ctime, '', 'ctime 不该是空的（列表上要显示时间）');
 assert.equal(mention.myMessage, '', '@ 我的没有「人家原话」可显示');
 
-// 老路子不能被我改坏：`/x/msgfeed/reply` 的字段形状。
+// 老路子不能被我改坏：`/x/msgfeed/reply` 的字段形状（真实数据核对过）。
 const replyItem = {
   id: 1,
   user: { mid: 1049033797, nickname: '我的小千1' },
@@ -62,8 +62,70 @@ const replyItem = {
 };
 const reply = client.normalizeMsgReply(replyItem);
 assert.equal(reply.mid, 1049033797);
-assert.equal(reply.rpid, 777, '「回复我的」的 rpid 仍取 reply.rpid');
+assert.equal(reply.rpid, 555, '「回复我的」的 rpid 优先取 item.source_id（对方那条评论），回它才回在同一串');
 assert.equal(reply.message, '你好呀');
+assert.equal(reply.bvid, 'BV1xx411c7mD', '视频号从 uri 里抠');
+
+// 没有 source_id 的老形状还得回落到 reply.rpid（别把线上两种形状搞混）。
+assert.equal(
+  client.normalizeMsgReply({ user: { mid: 9 }, item: {}, reply: { rpid: 777 } }).rpid,
+  777,
+  'source_id 缺失时回落 reply.rpid',
+);
+
+// 真实「回复我的」：source_content 是**对方说的话**，root_reply_content 是**她自己原来那条**，
+// title 跟 root_reply_content 一样（不是视频标题）——以前把它俩弄反，回复就答非所问。
+const realReply = client.normalizeMsgReply({
+  id: 1172989895057420,
+  user: { mid: 3494364865103885, nickname: '懒寻真' },
+  item: {
+    subject_id: 936177870,
+    root_id: 316074039329,
+    source_id: 316074512241,
+    target_id: 316074039329,
+    type: 'reply',
+    business_id: 1,
+    business: '评论',
+    title: '人家看完了那个视频，它把高效学习拆成取势、明道、优术三层……',
+    root_reply_content: '人家看完了那个视频，它把高效学习拆成取势、明道、优术三层……',
+    source_content: '你刷点别的视频，刷刷跟科技有关的',
+    uri: 'https://www.bilibili.com/video/BV16T4y1k7dB',
+  },
+  reply_time: 1791165692,
+});
+assert.equal(realReply.message, '你刷点别的视频，刷刷跟科技有关的', '对方说的那句才是 message');
+assert.equal(realReply.myMessage.startsWith('人家看完了那个视频'), true, '她自己那条进 myMessage');
+assert.equal(realReply.subject, '', 'title 是「被回复的评论」不是标题，不该当 subject');
+assert.equal(realReply.bvid, 'BV16T4y1k7dB');
+assert.equal(realReply.aid, 936177870, '视频 oid 取 subject_id（business_id 只是分区码）');
+assert.equal(realReply.rpid, 316074512241, '回对方那条评论');
+assert.equal(realReply.root, 316074039329, 'root 用 root_id，落在同一串');
+
+// 动态/专栏的「回复我的」：id 在 uri 的 /opus/<雪花号> 里 —— 必须留成字符串（超 2^53）。
+const opusReply = client.normalizeMsgReply({
+  id: 1172696486510601,
+  user: { mid: 1049033797, nickname: '我的小千1' },
+  item: {
+    subject_id: 411301241,
+    root_id: 0,
+    source_id: 316048667233,
+    type: 'album',
+    business_id: 11,
+    business: '动态',
+    source_content: '哇，是达尔文散人对吧！那个视频是真的牛逼！',
+    uri: 'https://www.bilibili.com/opus/1255384434914361365#reply316048667233',
+    native_uri: 'bilibili://opus/detail/1255384434914361365?comment_root_id=316048667233&comment_on=1',
+  },
+  reply_time: 1791130715,
+});
+assert.equal(opusReply.business, '动态');
+assert.equal(opusReply.bvid, null, '动态没有 BV 号');
+assert.equal(opusReply.aid, null);
+assert.equal(opusReply.opusId, '1255384434914361365', '专栏号是字符串，转数字会掉精度');
+assert.equal(opusReply.dynamicId, '1255384434914361365');
+assert.equal(opusReply.message, '哇，是达尔文散人对吧！那个视频是真的牛逼！');
+assert.equal(opusReply.rpid, 316048667233);
+assert.equal(opusReply.root, 316048667233, 'root_id 为 0 时兜底成 source_id');
 
 // ownerMentionList：只配了昵称没配 UID 的人要丢掉（没有 biz_id 的 @ 发出去是纯文本，等于没 @）。
 const cfg = {
