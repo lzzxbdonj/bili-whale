@@ -34,7 +34,7 @@ export const DEFAULTS = {
    * 配置版本戳（与 `lib/config.js` 逐字一致）：改了 policy / feed / learning / dailyDynamic 的
    * 默认值就 +1。`cloud/run.mjs` 的 `healConfig()` 靠它对 KV 里那份旧 `state:config` 自愈。
    */
-  cfgVersion: 1,
+  cfgVersion: 2,
   policy: {
     /** 视频一级评论：auto 直接发 / confirm 只出草稿 / off 禁止。 */
     postVideoComment: 'confirm',
@@ -530,13 +530,17 @@ export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false,
  * @param options.now - 当前时间戳（毫秒，测试可注入）。
  * @returns {{allowed: boolean, needsConfirm: boolean, mode: string, owner: boolean, rootRpid: *, warnings: string[], reasons: string[], message: string, hint: string}}
  */
-export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toName, confirm = false, selfMid = null, now = Date.now() }) {
+export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toName, confirm = false, selfMid = null, now = Date.now(), force = false }) {
   const mode = cfg.policy.postReply;
   const reasons = [];
   const warnings = [];
   const text = String(message ?? '').trim();
   const target = { mid: toMid, uname: toName, root };
   const owner = isOwnerTarget(cfg, target);
+  // 「主人的指令」= 调用方明确传下来的 `force`（私信命令那条链会给任何主人的指令打上
+  // `ownerFree` 的结论）。**不**因为「被回的人是主人」就免间隔 —— 那 15 秒是防 B 站风控的
+  // 节奏线，自动巡检一次回好几条主人评论时还得留着。
+  const free = force === true;
   // 源文件 lib/policy.js 是 rootRpid = Number(target.root) > 0 ? target.root : target.rpid；
   // 固定签名把 target 拆成了 root/toMid/toName，原 target.rpid 对应这里的可选 rpid 参数
   // （调用方没传时就是 undefined，与源文件遇到 target 没有 rpid 时完全一样）。
@@ -554,7 +558,7 @@ export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toNa
   if (self) reasons.push('这是她自己发的评论，不回自己');
   if (cfg.policy.replyScope === 'owner-only' && !owner) reasons.push('配置里 replyScope = owner-only：只回主人');
 
-  if (!owner && !self) {
+  if (free !== true && !owner && !self) {
     const perThread = Number(cfg.policy.replyPerUserPerThread) || 0;
     const used = threadReplyCount(ledger, rootRpid, toMid);
     if (perThread > 0 && used >= perThread) {
@@ -569,27 +573,29 @@ export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toNa
       }
     }
   } else if (owner) {
-    warnings.push('主人优先：跳过「每人一条」限制');
+    warnings.push(free === true ? '主人优先：不限条数、不限间隔（ownerUnlimited）' : '主人优先：跳过「每人一条」限制');
   }
 
   // 每日上限**分开算**（主人 2026-10-05：「我有评论她能回，别人的评论调用免费模型回」）。
   // 原来主人和陌生人共用 `dailyReplies`，主人一多聊几句就把额度用光，
   // 表现就是「她回不了评论区的评论了」。
-  if (owner) {
+  if (free !== true && owner) {
     const capOwner = Number(cfg.policy.dailyRepliesOwner ?? 50) || 0;
     const usedOwner = replyCountToday(ledger, now, true);
     if (capOwner > 0 && usedOwner >= capOwner) {
       reasons.push(`今日回复主人已达上限 ${capOwner} 条`);
     }
-  } else {
+  } else if (free !== true && !owner) {
     const cap = Number(cfg.policy.dailyReplies) || 0;
     const used = replyCountToday(ledger, now, false);
     if (cap > 0 && used >= cap) {
       reasons.push(`今日回复已达上限 ${cap} 条`);
     }
   }
-  const interval = intervalOk(cfg, ledger, now, owner);
-  if (!interval.ok) reasons.push(interval.reason);
+  if (free !== true) {
+    const interval = intervalOk(cfg, ledger, now, owner);
+    if (!interval.ok) reasons.push(interval.reason);
+  }
 
   const needsConfirm = mode === 'confirm' && confirm !== true;
   return {
@@ -597,6 +603,7 @@ export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toNa
     needsConfirm,
     mode,
     owner,
+    free,
     rootRpid,
     warnings,
     reasons,
@@ -682,7 +689,7 @@ export function pickFolderTitle(cfg, { topic = '', title = '' } = {}) {
  * @param options.now - 当前时间戳（毫秒，测试可注入）。
  * @returns {{allowed: boolean, needsConfirm: boolean, mode: string, reasons: string[], warnings: string[], message: string, hint: string}}
  */
-export function checkDynamic({ cfg, ledger, text, confirm = false, auto = false, now = Date.now() }) {
+export function checkDynamic({ cfg, ledger, text, confirm = false, auto = false, now = Date.now(), force = false }) {
   const mode = cfg.policy.postDynamic;
   const reasons = [];
   const warnings = [];
@@ -693,10 +700,11 @@ export function checkDynamic({ cfg, ledger, text, confirm = false, auto = false,
   const blocked = hitBlocked(value, cfg.policy.blockKeywords);
   if (blocked !== null) reasons.push(`命中屏蔽词「${blocked}」`);
   const counts = todayCounts(ledger, new Date(now));
-  if (counts.dynamics >= Number(cfg.policy.dailyDynamics)) {
+  // force = 主人的指令（遥控台手动发 / 本机代发）：每日一条与「今天已发过」让路，安全线照拦。
+  if (force !== true && counts.dynamics >= Number(cfg.policy.dailyDynamics)) {
     reasons.push(`今日动态已达上限 ${cfg.policy.dailyDynamics} 条`);
   }
-  if (auto === true && dynamicPostedToday(ledger, new Date(now))) {
+  if (force !== true && auto === true && dynamicPostedToday(ledger, new Date(now))) {
     reasons.push('今天已经发过动态了');
   }
   const needsConfirm = mode === 'confirm' && confirm !== true && auto !== true;
@@ -704,9 +712,22 @@ export function checkDynamic({ cfg, ledger, text, confirm = false, auto = false,
     allowed: reasons.length === 0 && !needsConfirm,
     needsConfirm,
     mode,
+    free: force === true,
     reasons,
     warnings,
     message: value,
     hint: needsConfirm ? '草稿模式：把内容给主人看，点头后再发。' : '',
   };
 }
+
+/**
+ * 「主人随心所欲」判定（与源文件 `lib/policy.js` 的 `ownerFree` 逐字一致的口径）：
+ * 主人的指令不该被每日上限 / 间隔 / 去重挡住；`force` 是调用方已经判定的结果。
+ *
+ * ⚠️ 不是免护栏：屏蔽词、字数上限、`postXxx = off`、观察模式、没登录没写权限照拦。
+ */
+export function ownerFree(cfg, { owner = false, force = false } = {}) {
+  if (force === true) return true;
+  return owner === true && cfg?.policy?.ownerUnlimited !== false;
+}
+

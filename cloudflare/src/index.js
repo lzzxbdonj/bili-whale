@@ -690,7 +690,7 @@ async function handleComment(env, state, ctx, request) {
   const confirm = body.confirm === true;
   const { client, flush } = makeClient(state, env, ctx);
   const video = await client.video(bvid);
-  const verdict = checkVideoComment({ cfg: state.cfg, ledger: state.ledger, bvid, message, confirm });
+  const verdict = checkVideoComment({ cfg: state.cfg, ledger: state.ledger, bvid, message, confirm, force: body.force === true });
   if (verdict.allowed !== true) {
     // 只有「纯粹因为草稿模式」才排队；有硬拦截理由（配额/间隔/屏蔽词）时排队也没意义
     if (verdict.needsConfirm === true && verdict.reasons.length === 0) {
@@ -737,6 +737,9 @@ async function handleReply(env, state, ctx, request) {
     message,
     toMid,
     toName: body.toName ?? '',
+    // 遥控台/本机手动发的，就是主人的指令 —— 免除「每人一条 / 24 小时 / 每日上限 / 最小间隔」，
+    // 屏蔽词、字数上限、postReply=off、观察模式这些安全线照拦（主人 2026-10-05「随心所欲」）。
+    force: body.force === true,
   });
   if (verdict.allowed !== true) {
     await flush();
@@ -774,7 +777,8 @@ async function handleDynamic(env, state, ctx, request) {
   if (body === null) return fail('请求体必须是 JSON 对象');
   const text = String(body.text ?? '').trim();
   if (text === '') return fail('需要 text');
-  const verdict = checkDynamic({ cfg: state.cfg, ledger: state.ledger, text });
+  // 手动发动态同理：这是主人的指令，dailyDynamics / 「今天已发过」给他让路。
+  const verdict = checkDynamic({ cfg: state.cfg, ledger: state.ledger, text, confirm: true, force: body.force === true });
   if (verdict.allowed !== true) return json({ ok: false, verdict }, 409);
   if (state.cfg.observeOnly === true) {
     return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再发。', 409);

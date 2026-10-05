@@ -231,7 +231,10 @@ export function recordFavorite(ledger, { aid, bvid = '', title = '', upName = ''
   ledger.favorites.push({ aid: Number(aid), bvid, title, upName, folderId, triple: triple === true, like: like === true, coin: Number(coin) || 0, date: dateKey(now), ts });
   ledger.favorites = ledger.favorites.slice(-500);
   ledger.lastActionTs = ts;
-  if (ledger.daily?.[dateKey(now)] !== undefined) ledger.daily[dateKey(now)].favorites = (ledger.daily[dateKey(now)].favorites ?? 0) + 1;
+  // 跟 `recordComment` / `recordReply` / `recordDynamic` 一样用 `todayBucket` ——
+  // 原来写成 `if (ledger.daily?.[dateKey(now)] !== undefined)` 时，账本里还没建今天的桶
+  // 就等于**不计数**，`dailyFavorites` 那道上限会被悄悄绕过（2026-10-05 补）。
+  todayBucket(ledger, now).favorites += 1;
   return ledger;
 }
 
