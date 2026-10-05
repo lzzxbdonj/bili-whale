@@ -85,6 +85,47 @@
 - 真机验证：修完立刻跑一轮 → `回 1 / 跳过 0 / 失败 0`，主人那条回出去了；
   手动跑一轮学习 → `topic=算法讲解 studied=2 historyReported=2`（两个视频都进了 B 站浏览记录）。
 
+### 1.7 第五轮：IP 属地之谜 + Worker 接付费脑子 + 「刷视频」四条要求
+- **主人问**：「为什么我 AI 的 IP 一会在美国一会在浙江，是不是跟它有关系？」→ **有关系，而且是三条出口**：
+  1. **美国** = **GitHub Actions**（`.github/workflows/whale.yml`，`runs-on: ubuntu-latest` → Azure 出口）。
+     它有自己的 `on.schedule: cron '*/10 * * * *'`，**不看本机心跳、每 10 分钟无条件跑** `cloud/run.mjs` 去碰 B 站。
+     Cloudflare Worker 的 cron 反而早就有「本机在岗就让位」的判断（`cloudflare/src/index.js` 的 `scheduled`，
+     日志里的「本机在岗（N 秒前还有心跳），云端只待命」），Worker 自己**不碰 B 站**。
+  2. **浙江** = 本机（DSH 插件 + 看门鲸）**直连家宽**。
+  3. **台湾** = 我自己引入的：看门鲸启动时带了 `$env:HTTPS_PROXY=http://127.0.0.1:19451`（交接文档教的），
+     而本机有 **`NODE_USE_ENV_PROXY=1`**，于是它的 **B 站请求也走了 clash**，出口 `103.127.218.32`（台北，Pittqiao Network）。
+- **修法**：
+  1. `cloud/run.mjs` 的 `main()` 里加**本机心跳让位**（`LOCAL_TTL_MS = 30 分钟`；`--always` 可强制跑）——
+     本机在岗时 Actions 直接 `本机在岗（N 秒前还有心跳）→ 云端让位，这轮不碰 B 站` 并退 0。
+  2. **看门鲸不再带 `HTTPS_PROXY` 启动**；云端对账改走显式配置 **`config.json` 的 `cloud.proxy`**
+     （`lib/cloud.js:56` 的读取顺序：cloud.json > `cfg.cloud.proxy` > `BILI_WHALE_CLOUD_PROXY`）。
+     于是 **B 站永远从浙江走直连**，只有「对 Cloudflare 的请求」才过代理。已实测：不设环境变量时
+     `cloud.proxy` 照样把 `/status` 打通报（`ok: true`）。
+- **给 Worker 配了付费脑子**：加了 secret **`DEEPSEEK_API_KEY`**（`wrangler secret put`），
+  并在 `cloudflare/src/persona.js` 新增 `deepseekText()`；`draftReply()` 里**只有 `isOwner === true`** 才先试它，
+  失败/没 key 静默回落免费 Workers AI；**陌生人继续走免费**（与本机 `lib/compose.js` 同口径）。
+  提交里只动了 persona/policy；Worker 版本 **`2aaa72ae-0258-4fc4-9256-f566cdb4ed59`**。
+  ⚠️ **GitHub Actions 那条线要另外配**：`whale.yml` 里写着 `DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}`，
+  需要在 GitHub 仓库 Secrets 里也加同名 secret，否则云端那只「手脚」仍用免费模型。
+- **「刷视频」四条要求**（主人原话：「给她自己自动刷视频的权限，每一天都要有浏览记录，
+  遇到觉得有意思的视频就三连，还有我们让她刷什么视频她就要刷什么」）：
+  1. **每天必有浏览记录** → `lib/study.js` 新增 `ensureDailyWatch()`：今天 `watched` 还是空的，
+     就从 popular/rcmd/ranking 里抓一条**带 cid** 的报进 B 站历史 + 记账本；在 `learnOnce` 的
+     **两个返回点**都调用（含「这轮没挑到合适视频」的早退分支）。
+  2. **自动刷的权限** → 宿主 `learning.checkMinutes: 10` + 看门鲸 `--study-every 30`（≈10 分钟），两路错开。
+  3. **三连** → 本来就在做（今天已连 6 个）；只是撞上了 `dailyTriples: 5`。**现已改成 0 = 不限**。
+  4. **主人点名刷什么就刷什么** → `lib/dmcmd.js` 新增 **`/刷 <BV号|关键词> [个数]`**（别名 `刷`/`watch`/`browse`/`看`）：
+     真拉详情 → 真报浏览记录 → 记 `watched`（`source: 'master'`）→ 读一眼前排评论 → 按「好内容」走三连闸门；
+     回执一行一个（`BV号｜标题｜UP｜播放｜时长｜进历史✓｜三连✓｜热评N`），压到 200 字内。
+  5. **不限额度**（主人追加）：「不加三连上限，币没了也没事」→ `dailyTriples: 0`；
+     「主人的回复不限额度」→ `dailyRepliesOwner: 0`（`checkReply` 里 `cap > 0` 才算上限）；
+     「陌生人的就用免费模型」→ `lib/compose.js:156` / `lib/brain.js:344` 的 `prefer: isOwner ? 'paid' : ''`（本来就是）。
+- **提交**：`95e8ac3`（自动刷+每天必有记录+/刷+云端让位+Worker 付费）、`8bd92c2`（不限额度/不限三连）。
+  Worker：`296744e2-…` → **`2aaa72ae-0258-4fc4-9256-f566cdb4ed59`**。看门鲸 pid **24124**。
+  测试仍**八套全绿**（`test/triple.test.mjs` 加第 ⑨ 节钉住 `ensureDailyWatch`；`test/dmcmd.test.mjs` 加第 6 节钉住 `/刷`）。
+- 真机验证：`ensureDailyWatch` → `{ok:true, already:6}`（今天已有痕迹，正确跳过）；
+  `/刷 BV1M5411g7He` → `刷了 1 个，三连 1 个：BV1M5411g7He｜…｜进历史✓｜三连✓｜热评3`，账本 `watched` 里 `source: master`。
+
 ## 2. 本轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
 - **`b89bae1`** `feat(reply): 回复不带 @ / 回主人走付费脑子 / 脑子抽风重试 + 消息中心字段修正`
