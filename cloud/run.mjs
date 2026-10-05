@@ -553,7 +553,7 @@ async function main() {
   // 免费额度只有 1000 写/天），只在①真的干了活、②主人手动派的任务、③每小时整点 报一声 ——
   // 这样既省额度，又能从日志里看出「云端还活着」。
   const quiet = line === '' && TASK === 'patrol';
-  const hourly = new Date().getUTCMinutes() < 10;
+  const hourly = new Date().getUTCMinutes() < 5;
   if (DRY !== true && (!quiet || hourly)) {
     await panel('/log', {
       method: 'POST',

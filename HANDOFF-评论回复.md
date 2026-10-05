@@ -882,3 +882,28 @@ console.log(await runReplyCheck({}));
      仍返回 `persisted: false`；云端 `meta.localSeenAt` 冻在 `04:37:32Z`。
    - 结论：设计上「本机关机 → 云端接手」，但**替补的饭碗（KV 写额度）被 5 分钟一轮的双向同步吃光**，
      加上 Worker 那份 cookie 不被 B 站认作登录，于是电脑一关就没人能说话。
+
+---
+
+## §14 云端替补为什么哑了（KV 免费写额度写爆）与修法
+
+- **实测（2026-10-05 18:31 北京）**：`gh workflow run whale.yml -f task=login` → 日志 `登录：已登录 · 等级 Lv2 · 可写：是` ⇒ **GitHub Actions 那条腿是好的**（Azure 出口 B 站不拦）。
+- **同一时刻的 KV 写**：`npx wrangler kv key put …` 报 Cloudflare 官方错误
+  `your account has reached the free usage limit for this operation for today [code: 10048]`；
+  云端 `POST /probe` 也回 `{"persisted":false,"wrote":false}` ⇒ **免费额度 1000 写/天，在北京时间 12:37 就写爆了**。
+- **后果链**：写爆 → 本机心跳再也写不上去（`state:meta.localSeenAt` 冻在 `04:37Z`）→ Worker cron 以为本机不在岗，
+  每 30 分钟喊一次 GH（日志里一整天都是「本机不在岗 → 喊手脚 成功」）→ GH 每轮被 `cloud/run.mjs:443 storeWritable()`
+  那道 nonce 安全闸挡住（「云端 KV 写不进去 → 本轮不动作」），宁可不动手 ⇒ **电脑关了她就真哑了**。
+  注意：Worker 自己的 `/status` 显示 `loggedIn:false` 是**设计如此**（出口 IP 被 B 站 -412 整段拦，见 `cloud/run.mjs` 文件头注释），真正的手脚是 Actions。
+- **写爆的账**：本机几乎每分钟一次完整交接（`POST /state` = cookie/账本/草稿/meta 4 个键）+ 一次 `POST /config`（1 键），
+  一天四千多次；GH `*/5` 光 nonce 校验就 ≈288 写/天。两边一起就超了。
+- **本次修法**：
+  1. `lib/cloudsync.js`：完整交接加 **30 分钟地板**（`force` 60 秒）、配置推送 **1 小时地板**、心跳 5→**15 分钟**；
+     草稿指纹先 `.sort()`（`mergePending` 的先后顺序抖动不再算成「内容变了」）。
+  2. `.github/workflows/whale.yml`：`*/5` → **`*/10`**（288 → 144 轮/天）。
+  3. `cloud/run.mjs`：新增 **`--task=login`** 体检分支（只问能不能登录，不写云端）；整点日志从「分钟<10」收到「分钟<5」。
+- **预算**：本机 ≤ ~300 写/天 + GH ~170 + Worker cron ~50 ⇒ 全天 ~500 写，留一倍余量。
+- **想回到 5 分钟一轮**：① 给 KV 升付费（$5/月，100 万写/天）；或 ② 把 Worker 的 4 个 state 键并成 1 个
+  （wrangler OAuth 已能自动刷新：账号 `lzzxbdonj@qq.com`、account id `7f95e215a3657abac40bd71856607d2a`、
+  namespace `ca2d07df63b548f2bcf95b99d497ac3f`，`workers_kv/workers_scripts` 都有写权限）。
+- **注意**：DSH 宿主里的插件进程是启动时载入的旧代码，**要重启一次 DSH** 才会用上这些地板；看门鲸已重启（pid 7776）。
