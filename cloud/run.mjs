@@ -295,10 +295,52 @@ async function studyRound(run, { cfg, pending }) {
   return done;
 }
 
+/**
+ * 「脑子」自检：云端这条线到底哪家模型能用。
+ *
+ * 为什么要有它：GitHub runner 上拿不到本机的 `logs/brain.log`，评论回不出来时只看到
+ * 「脑子没给出正文」这一句，分不清是 whale（云端 Workers AI 额度用光）还是兜底的
+ * pollinations（GitHub 出口 IP 被限流）出的问题。这个任务不碰 B 站，可以随时跑。
+ */
+async function brainCheck() {
+  const { resolveConfig } = await import('../lib/config.js');
+  const { brainConfig, askBrain } = await import('../lib/brain.js');
+  const cfg = resolveConfig({});
+  const brain = brainConfig(cfg);
+  say(`脑子配置：provider=${brain.provider} · model=${brain.model || '(预设)'} · fallback=${brain.fallback === '' ? '(空)' : brain.fallback} · paid=${brain.paid === '' ? '(空)' : brain.paid} · enabled=${brain.enabled}`);
+  const order = [brain.provider, ...String(brain.fallback ?? '').split(',').map((item) => item.trim()).filter((item) => item !== '')];
+  for (const provider of [...new Set(order)]) {
+    const t0 = Date.now();
+    const text = await askBrain(
+      { ...cfg, brain: { ...cfg.brain, provider, fallback: '' } },
+      { system: '你是小鲸鱼娘，自称人家。', user: '用一句话说今天天气好。' },
+    );
+    say(`  ${provider}：${text === null ? '失败（原因见下）' : `成功 ${Date.now() - t0}ms：${text.slice(0, 40)}`}`);
+  }
+  // brain.log 只留「哪家、什么状态码」这些行，不带正文（公共仓库的日志谁都能看）。
+  try {
+    const { readFileSync, existsSync } = await import('node:fs');
+    const path = join(STATE, 'logs', 'brain.log');
+    if (existsSync(path)) {
+      const lines = readFileSync(path, 'utf8').trimEnd().split('\n').slice(-8);
+      for (const line of lines) say(`  brain.log｜${line.slice(0, 160)}`);
+    }
+  } catch (issue) {
+    say(`  （brain.log 读不出来：${String(issue?.message ?? issue).slice(0, 80)}）`);
+  }
+}
+
 async function main() {
   say(`== 小鲸鱼娘云端巡检：${TASK} @ ${new Date().toISOString()}`);
   const state = await pullState();
   say(`状态拉取完成：cookie ${Object.keys(state.cookies).length} 项 · 账本草稿 ${state.pending.length} 条`);
+
+  // 脑子自检：不碰 B 站，所以放在「本机在岗就让位」前面。
+  if (TASK === 'brain') {
+    await brainCheck();
+    say('== 结果：脑子自检完成');
+    return;
+  }
 
   // 本机在岗就让位。
   //
