@@ -129,6 +129,34 @@ async function storeWritable() {
   }
 }
 
+/**
+ * 云端配置自愈：KV 里那份 `state:config` 会盖住仓库里的默认值（`store.js` 的合并顺序是
+ * 默认值 < wrangler `[vars]` < KV 覆盖），而**本机关机后没人再往云端推配置** —— 于是云端会一直
+ * 按主人中午之前那版旧政策干活（2026-10-05 的现场：视频评论不限量、动作间隔 120 秒）。
+ *
+ * 规矩：配置里带一个版本戳 `cfgVersion`，两边戳不一样才用仓库默认值重推一次；
+ * 推完两边就一致，不会每轮都写（KV 免费写额度只有 1000/天）。
+ * **改了 policy/learning/feed/dailyDynamic 的默认值，就把 lib/config.js 与
+ * cloudflare/src/policy.js 里的 cfgVersion 一起 +1**，否则云端不会自己更新。
+ */
+async function healConfig(state) {
+  const { DEFAULTS } = await import('../lib/config.js');
+  const want = Number(DEFAULTS?.cfgVersion ?? 0);
+  const have = Number(state?.config?.cfgVersion ?? 0);
+  if (!(want > 0) || want === have) return false;
+  const patch = { cfgVersion: want };
+  for (const group of ['policy', 'feed', 'learning', 'dailyDynamic']) {
+    if (DEFAULTS?.[group] !== undefined && DEFAULTS?.[group] !== null) patch[group] = DEFAULTS[group];
+  }
+  const result = await panel('/config', { method: 'POST', body: patch });
+  if (result?.persisted === false) {
+    say(`⚠ 云端配置是旧的（版本 ${have || '缺失'} → ${want}），但这一版没落盘（KV 写不进去），下一轮再试`);
+    return false;
+  }
+  say(`云端配置是旧的（版本 ${have || '缺失'} → ${want}）：已用仓库默认值重推一遍（视频评论 ${patch.policy?.dailyVideoComments} 条/天等）`);
+  return true;
+}
+
 /** 把干完的结果推回遥控台（cookie 可能被 B 站刷新过，必须带回去）。 */
 async function pushState({ pending, meta, since }) {
   const { loadLedger, saveLedger } = await import('../lib/ledger.js');
@@ -419,6 +447,9 @@ async function main() {
   }
   say('云端 KV 可写（nonce 读回来了）· 继续干活');
 
+  // 配置自愈：本机关机后没人推配置，这里自己对一下版本戳（见 healConfig 的注释）。
+  await healConfig(state);
+
   const { buildBiliTools } = await import('../lib/tools.js');
   const { resolveConfig } = await import('../lib/config.js');
   const { loadLedger } = await import('../lib/ledger.js');
@@ -500,11 +531,16 @@ async function main() {
   const pushed = await pushState({ pending: state.pending, meta: state.meta, since });
   const line = summary.join(' · ');
   say(`== 结果：${line === '' ? '无事发生' : line}`);
-  if (DRY !== true) {
-    // 遥控台的日志柜：一行计数，方便主人事后翻「她今天都干了啥」。
+  // 遥控台的日志柜：一行计数，方便主人事后翻「她今天都干了啥」。
+  // 省额度：巡检改成每 5 分钟一轮后，**没事发生的轮次不再逐条写日志**（每写一次就是一次 KV 写，
+  // 免费额度只有 1000 写/天），只在①真的干了活、②主人手动派的任务、③每小时整点 报一声 ——
+  // 这样既省额度，又能从日志里看出「云端还活着」。
+  const quiet = line === '' && TASK === 'patrol';
+  const hourly = new Date().getUTCMinutes() < 10;
+  if (DRY !== true && (!quiet || hourly)) {
     await panel('/log', {
       method: 'POST',
-      body: { at: new Date().toISOString(), task: TASK, line, counts: pushed.ledger?.daily ?? {} },
+      body: { at: new Date().toISOString(), task: TASK, line: line === '' ? '无事发生（巡检还在跑）' : line, counts: pushed.ledger?.daily ?? {} },
     }).catch(() => null);
   }
 }

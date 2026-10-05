@@ -30,6 +30,11 @@ export const DEFAULTS = {
   ownerNames: [],
   /** 人格标识，仅作文档用途。 */
   persona: 'whale-maid',
+  /**
+   * 配置版本戳（与 `lib/config.js` 逐字一致）：改了 policy / feed / learning / dailyDynamic 的
+   * 默认值就 +1。`cloud/run.mjs` 的 `healConfig()` 靠它对 KV 里那份旧 `state:config` 自愈。
+   */
+  cfgVersion: 1,
   policy: {
     /** 视频一级评论：auto 直接发 / confirm 只出草稿 / off 禁止。 */
     postVideoComment: 'confirm',
