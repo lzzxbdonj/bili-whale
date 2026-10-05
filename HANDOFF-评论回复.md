@@ -787,3 +787,59 @@ console.log(await runReplyCheck({}));
    账本里已有的 16 条回复已回灌进日志（10 个 rpid）。测试第 5 节覆盖（账本被抹后仍拦得住 + forget 后可重发）。
    ⚠ 宿主插件会在插件文件变化后自动重载：`boot.json` 显示 15:05:58 又加载了一次（在 `lib/replied.js` 15:05:15、
    `lib/reply.js` 15:05:21、`lib/tools.js` 15:05:34 同步之后）——**宿主与看门鲸现在跑的都是新代码**。
+   ❌ **这句是错的，第 12 节已更正**：`boot.json` 的 `loadedAt` 只是「插件被 apply 了一次」的时间戳，
+   Node 的 ESM 缓存按进程生效 —— 同一个宿主进程里再 import 同一个路径，拿到的还是 13:15 启动时那份模块。
+   插件里真正在跑的是提交 `7305c6e`（12:46:41 +0800），早于锁（14:58）与追加日志（15:05）。
+
+## 12. 2026-10-05 夜里：「私信为什么还是一次发两个」（已用配置掐断，根治需重启一次 DSH）
+
+1. **事故（主人 2026-10-05 报「私信为什么还是一次发两个」「本地跟本地打架了一次发两个！」）**
+   - 主人会话里同一条私信「你现在不会乱评论了吧？」被回了**两条不同文案**；「刷视频去」收到**两份回执**
+     （`刷了 1 个，三连 1 个：BV1PAHi6YEC7…` 与 `刷了 1 个，三连 1 个，评论 1 条：BV1PAHi6YEC7…`）。
+   - `logs/actions.log`：`dm-ack mid=3494364865103885` 在 `07:14:17.771Z` 与 `07:14:17.852Z`（相隔 **81 毫秒**）
+     两条；`dm-intent watch … mid=3494364865103885` 的 `args=一个`（`08:07:32.339Z`/`08:07:40.306Z`）、
+     `args=的啥`（`08:08:19.084Z`/`08:08:29.854Z`）、`args=什么`（`08:09:33.404Z`/`08:09:38.407Z`）
+     每条都被处理**两遍**（间隔 5～10 秒）。
+   - 账本 `ledger.json` 里每对只留下**一条** `dms`（另一条被整份覆盖写抹掉），而 `dmIncoming` 里
+     「这个质量太低了，你再刷一个」出现**两次**（都记成 16:07:08）——**丢更新的老毛病又犯了**。
+   - 当时两条日志都还没有 pid 后缀（我 16:09 才加），所以只能靠节奏分辨：
+     `auto.log` 里每 **20 秒**一轮（后带 `/ pid 20968`）的是看门鲸，每 **60 秒**在 `:16` 一条（无 pid）的是宿主插件。
+2. **根因：宿主插件里跑的是 DSH 启动时（13:15）载入的旧模块，它看不见今天加的锁**
+   - 两个 `runDmCheck` 调用者：`lib/index.js` 的插件定时器（`dmCheckMinutes: 1`，60 秒一轮）与
+     `tools/dm-watch.mjs`（`--reply-every 6` / 20 秒一轮）。`Get-CimInstance Win32_Process` 确认本机
+     `dm-watch` **只有一个**，所以那条无 pid 的 60 秒序列只能来自宿主进程内的插件。
+   - `git log --before=2026-10-05T05:20:00Z -1 -- lib/tools.js lib/index.js lib/policy.js`
+     → **`7305c6e3004076d88c049201efe59d914b858e4a`（2026-10-05 12:46:41 +0800）**，
+     即早于跨进程锁 `lib/lock.js`（14:58）、追加日志 `lib/replied.js`（15:05）、并集落盘 ——
+     所以插件那一边**既没有锁也没有追加日志**，照旧整份覆盖写、照旧重复私信。第 11 节第 6 条说的
+     「宿主已换新代码」是**读错了 `boot.json`**（那个时间戳不代表模块被重新 import）。
+   - **关/开插件不能换代码**：`plugin_manager set_plugin`（`include:biliwhale`，先 `enabled=false` 再 `true`）
+     返回 `{"changed":true,"application":"applied"}`，但 `boot.json` 仍是 `loadedAt 15:05:58 / pid 10708`
+     （该 pid 早就不存在），之后 `:16` 那条无 pid `dm check` 照样出现。
+   - 插件每轮都重新 `resolveConfig(pluginConfig)`，而 `cordis.patch.yml` 里 `- id: biliwhale` **没有 config**
+     ⇒ `pluginConfig = {}` ⇒ **改用户配置就能让插件的每一轮空转**（下一轮立刻生效，不用重启）。
+3. **修法：配置里把插件那三条线关掉，只留看门鲸一个写手（它带锁 + 追加日志）**
+   - `tools/dm-watch.mjs` 新增 `const SELF_CFG = { policy: { allowDm: true, replyPerRun: 2, replyPerRunOthers: 2 },
+     learning: { enabled: true } };`，并把 `runDmCheck({})` / `runReplyCheck({})` / `runStudyOnce({})`
+     改成传 `SELF_CFG`（`heartbeat({})`、`syncOnce({}, …)` 不动）—— 插件被配置掐掉的，看门鲸在这里显式开回来。
+   - 用户配置（`bili_config op=set`）写入 `{"policy":{"allowDm":false,"replyPerRun":0,"replyPerRunOthers":0},
+     "learning":{"enabled":false}}`。旧插件代码里对应的闸口：`runDmCheck` 开头 `cfg.policy?.allowDm === false` 直接返回
+     （**任何账本写入之前**就停）；`runStudyOnce` 开头 `cfg.learning?.enabled === false`；
+     回复轮则靠 `lib/reply.js` 的 `pick.slice(0, limits.perRun)` —— `replyPerRun: 0` 是「一条都不挑」
+     （不是「不限」），插件的回复轮于是只读不写。
+     没用 `policy.postReply = 'off'`：那个在 `lib/policy.js:275` 是**无条件**拦（`force` 也不放行），会连带掐掉手动回复。
+   - 看门鲸重启为 **pid 24204**（16:17 起，命令行不变：`--minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`）。
+4. **验证（`logs/auto.log`）**
+   - 看门鲸照常工作：`08:17:42.052Z`、`08:18:03.051Z`、`08:18:22.756Z`、`08:18:42.593Z`、`08:19:02.401Z`、`08:19:22.208Z`
+     每 20 秒一条 `dm check: 寒暄 0 条 / 备注 2 条 / pid 24204`。
+   - 插件的无 pid `dm check` **最后一条停在 `08:17:16.746Z`**，`08:18:16` / `08:19:16` 起不再出现
+     （旧代码只在成功路径写日志，被 `allowDm=false` 拦下就静默）⇒ 插件的私信轮已空转。
+   - 插件的回复轮仍在跑但挑 0 条：`08:19:16.234Z reply check: 回 0 条 / 跳过 2 条 / 失败 0 条 / 待回 2`（无 pid）；
+     同一轮看门鲸 `08:19:23.636Z … / pid 24204 / 这一串人家已经回过了，别刷屏`。
+5. **根治（留给主人一个动作）**：重启一次 DSH 宿主，插件才会重新 import 今天的模块；那之后两边都带锁 +
+   追加日志，可以共存，`SELF_CFG` 与配置里的三个闸口都可以撤掉（也可以就这么留着 —— 只留一个写手更干净）。
+   在重启之前，**不要**把 `policy.allowDm`、`policy.replyPerRun`、`policy.replyPerRunOthers`、`learning.enabled`
+   改回默认值，否则插件又会拿着旧代码整份覆盖写。
+6. **十二套测试全绿**（`test/{smoke,mention-dm,triple,reply,text,dmcmd,debug,sync,owner-free,dup-reply}` +
+   `cloudflare/test/{port,patrol.mock}`）；临时探针 `_tmp-locktest.mjs`、`_tmp-holdlock.mjs` 与 `a/b/hold` 的
+   out/err 已删。
