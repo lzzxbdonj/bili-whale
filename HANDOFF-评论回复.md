@@ -824,11 +824,17 @@ console.log(await runReplyCheck({}));
      改成传 `SELF_CFG`（`heartbeat({})`、`syncOnce({}, …)` 不动）—— 插件被配置掐掉的，看门鲸在这里显式开回来。
    - 用户配置（`bili_config op=set`）写入 `{"policy":{"allowDm":false,"replyPerRun":0,"replyPerRunOthers":0},
      "learning":{"enabled":false}}`。旧插件代码里对应的闸口：`runDmCheck` 开头 `cfg.policy?.allowDm === false` 直接返回
-     （**任何账本写入之前**就停）；`runStudyOnce` 开头 `cfg.learning?.enabled === false`；
-     回复轮则靠 `lib/reply.js` 的 `pick.slice(0, limits.perRun)` —— `replyPerRun: 0` 是「一条都不挑」
-     （不是「不限」），插件的回复轮于是只读不写。
-     没用 `policy.postReply = 'off'`：那个在 `lib/policy.js:275` 是**无条件**拦（`force` 也不放行），会连带掐掉手动回复。
-   - 看门鲸重启为 **pid 24204**（16:17 起，命令行不变：`--minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`）。
+     （**任何账本写入之前**就停）；`runStudyOnce` 开头 `cfg.learning?.enabled === false`。
+     ⚠ **`replyPerRun: 0` 掐不住回复轮**：旧 `lib/reply.js:25` 是 `perRun: Math.max(1, Number.isFinite(perRun) ? perRun : 3)`
+     —— 写 0 会被抬成 1，每轮照样回一条（08:21:18 真机上插件又追着回了一条，`skip` 也拦不住，
+     因为账本里那几行 `rpid=316071900673` 的旧记录早被它自己的整份覆盖写抹掉了）。
+     所以回复轮改用 `{"policy":{"postReply":"off"}}`：`lib/index.js:257`（旧版 `:220`）在**进工具之前**直接返回，
+     `lib/reply.js` 根本不跑。SELF_CFG 里同时给看门鲸写回 `postReply: 'auto'`。
+     ⚠ 副作用：重启 DSH 之前，插件那条 `bili_reply` **工具**路径会被 `lib/policy.js:275` 无条件拦
+     （手动回复会报「配置里 postReply = off」）—— 这期间回复全靠看门鲸的自动轮。
+     没用 `policy.postReply = 'off'` 之外的招：`replyToOthers: false` 只挡陌生人、挡不住主人那条。
+   - 看门鲸重启为 **pid 4068**（16:23 起，命令行不变：`--minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`；
+     上一轮是 pid 24204）。
 4. **验证（`logs/auto.log`）**
    - 看门鲸照常工作：`08:17:42.052Z`、`08:18:03.051Z`、`08:18:22.756Z`、`08:18:42.593Z`、`08:19:02.401Z`、`08:19:22.208Z`
      每 20 秒一条 `dm check: 寒暄 0 条 / 备注 2 条 / pid 24204`。
@@ -836,6 +842,12 @@ console.log(await runReplyCheck({}));
      （旧代码只在成功路径写日志，被 `allowDm=false` 拦下就静默）⇒ 插件的私信轮已空转。
    - 插件的回复轮仍在跑但挑 0 条：`08:19:16.234Z reply check: 回 0 条 / 跳过 2 条 / 失败 0 条 / 待回 2`（无 pid）；
      同一轮看门鲸 `08:19:23.636Z … / pid 24204 / 这一串人家已经回过了，别刷屏`。
+   - `postReply: 'off'` 之后（16:23 起）：插件的 `reply check` 行在 `08:23:18.058Z`（改配置前最后一轮）之后就没了，
+     看门鲸照常 `08:25:22.309Z reply check: 回 0 条 / 跳过 4 条 / 失败 0 条 / 待回 5 / pid 4068`。
+   - 顺带看清两件事：① `08:23:18.058Z` 那一条插件回复**不是重复**，是回主人 16:07 的新评论
+     （`rpid 316110644673` → 她回 `selfRpid 316111999473`）；② 真的重复在 `BV1UAYd6WE2t` 那串 ——
+     主人一句 `rpid 316071900673` 被追着回了 **7 条**（10:39 / 10:44 / 14:53 / 16:21 等，文案都差不多），
+     账本里 `rpid=316071900673` 有 5 条记录 —— 旧代码靠账本去重，账本一被覆盖写抹掉就再回一遍。
 5. **根治（留给主人一个动作）**：重启一次 DSH 宿主，插件才会重新 import 今天的模块；那之后两边都带锁 +
    追加日志，可以共存，`SELF_CFG` 与配置里的三个闸口都可以撤掉（也可以就这么留着 —— 只留一个写手更干净）。
    在重启之前，**不要**把 `policy.allowDm`、`policy.replyPerRun`、`policy.replyPerRunOthers`、`learning.enabled`

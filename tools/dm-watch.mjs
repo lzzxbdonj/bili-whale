@@ -122,9 +122,13 @@ function checkRestart() {
  * 办法：在用户配置里把插件的私信轮 / 回复轮 / 学习轮关掉（`runDmCheck` 每轮都重新
  * `resolveConfig`，所以配置文件一改，插件下一轮就空转），看门鲸在这里显式开回来 ——
  * 只留它这一条写手。等宿主重启（插件重新载入新代码）以后，这两边都带锁，就不会再打架了。
+ *
+ * 回复轮为什么关 `postReply` 而不是 `replyPerRun: 0`：旧代码 `lib/reply.js:25` 是
+ * `perRun: Math.max(1, …)` —— 写 0 也会被抬成 1，每轮照样回一条（真机上就这么又回了一条）。
+ * `postReply: 'off'` 才会让 `runReplyCheck` 在开头直接返回。
  */
 const SELF_CFG = {
-  policy: { allowDm: true, replyPerRun: 2, replyPerRunOthers: 2 },
+  policy: { allowDm: true, postReply: 'auto', replyPerRun: 2, replyPerRunOthers: 2 },
   learning: { enabled: true },
 };
 
