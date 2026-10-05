@@ -603,8 +603,10 @@ export class BiliClient {
    * 发一条评论。`mentions` 里的 `@昵称` 会随 `at_name_to_mid` 交给服务端，
    * 这样评论区的 @ 才是**真 @**（对方能收到通知）——跟 lib/api.js 同一份实测结论。
    */
-  async commentAdd({ aid, message, root, parent, bvid, mentions = [] }) {
-    const form = { type: 1, oid: String(aid), message, plat: 1, csrf: this.csrf() };
+  async commentAdd({ aid, message, root, parent, bvid, mentions = [], type = 1 }) {
+    // type=1 视频评论；type=17 动态评论（oid 传动态 id，不是 aid）——动态底下被人回了也必须答得上。
+    const oidType = Number(type) === 17 ? 17 : 1;
+    const form = { type: oidType, oid: String(aid), message, plat: 1, csrf: this.csrf() };
     if (root !== undefined && root !== null) form.root = String(root);
     if (parent !== undefined && parent !== null) form.parent = String(parent);
     const nameToMid = {};
@@ -616,11 +618,10 @@ export class BiliClient {
       nameToMid[name] = String(mid);
     }
     if (Object.keys(nameToMid).length > 0) form.at_name_to_mid = JSON.stringify(nameToMid);
-    const body = await this.request('/x/v2/reply/add', {
-      method: 'POST',
-      form,
-      referer: `https://www.bilibili.com/video/${bvid ?? `av${aid}`}`,
-    });
+    const referer = oidType === 17
+      ? `https://t.bilibili.com/${String(aid)}`
+      : `https://www.bilibili.com/video/${bvid ?? `av${aid}`}`;
+    const body = await this.request('/x/v2/reply/add', { method: 'POST', form, referer });
     return body?.data?.reply ?? body?.data ?? {};
   }
 
@@ -720,6 +721,48 @@ export class BiliClient {
       ts: Number(reply?.ctime ?? item?.reply_time ?? 0) * 1000 || null,
       isMulti: item?.is_multi === 1,
       raw: item,
+    };
+  }
+
+  /**
+   * 「@我的」消息中心（需要登录）。
+   *
+   * 与 lib/api.js 同源：「@ 我的」走的是另一个接口 `/x/msgfeed/at`（不是 `/x/msgfeed/reply`），
+   * 只读后者时主人在评论里 @ 她会毫无反应。
+   */
+  async msgMentions({ ps = 20, id } = {}) {
+    const params = { platform: 'web', build: 0, mobi_app: 'web', ps };
+    if (id !== undefined && id !== null && id !== '') params.id = String(id);
+    const { body } = await this.request('/x/msgfeed/at', { params, referer: 'https://message.bilibili.com/', raw: true });
+    const data = body?.data ?? {};
+    return {
+      code: body?.code ?? 0,
+      items: (data.items ?? []).map((item) => this.normalizeMsgMention(item)),
+      cursor: data.cursor ?? {},
+      raw: data,
+    };
+  }
+
+  /** 消息中心一条「@我的」→ 精简结构（@ 我的没有 `reply` 段，正文在 `item.source_content`）。 */
+  normalizeMsgMention(item) {
+    const inner = item?.item ?? {};
+    const base = this.normalizeMsgReply(item);
+    const atText = stripHtml(inner?.source_content ?? '');
+    const fromUri = /\/video\/(BV[0-9A-Za-z]+)/.exec(String(inner?.uri ?? ''));
+    return {
+      ...base,
+      // source_id = 写着这句 @ 的那条评论的 rpid —— 回它就回在同一个评论串里。
+      rpid: inner?.source_id ?? base.rpid,
+      root: inner?.root_id || inner?.source_id || base.root,
+      bvid: fromUri === null ? null : fromUri[1],
+      aid: inner?.subject_id ?? base.aid,
+      // 动态的 id 在 subject_id 上；`oid`（= source_id）是那条 @ 评论的 rpid，别拿它当动态 id 用。
+      dynamicId: inner?.subject_id ?? null,
+      message: atText !== '' ? atText : base.message,
+      myMessage: atText !== '' ? '' : base.myMessage,
+      atDetails: (inner?.at_details ?? []).map((detail) => ({ mid: detail?.mid ?? null, nickname: detail?.nickname ?? '' })),
+      ctime: base.ctime !== '' ? base.ctime : fmtTime(item?.at_time ?? null),
+      ts: Number(item?.at_time ?? 0) * 1000 || base.ts,
     };
   }
 

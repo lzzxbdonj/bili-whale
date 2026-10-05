@@ -110,6 +110,9 @@ export function varsConfig(env) {
   setPolicy('maxCommentChars', num(env?.MAX_COMMENT_CHARS));
   setPolicy('replyPerUserPerThread', num(env?.REPLY_PER_USER_PER_THREAD));
   setPolicy('replyPerUserWindowHours', num(env?.REPLY_PER_USER_WINDOW_HOURS));
+  setPolicy('replyPerRun', num(env?.REPLY_PER_RUN));
+  setPolicy('replyPerRunOthers', num(env?.REPLY_PER_RUN_OTHERS));
+  setPolicy('replyToOthers', bool(env?.REPLY_TO_OTHERS));
   if (Object.keys(policy).length > 0) out.policy = policy;
   if (ok(env?.DAILY_DYNAMIC_AT)) out.dailyDynamic = { at: env.DAILY_DYNAMIC_AT };
   if (ok(env?.FEED_SOURCE)) out.feed = { sources: [env.FEED_SOURCE] };

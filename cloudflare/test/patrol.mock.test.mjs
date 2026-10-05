@@ -101,11 +101,13 @@ const navLoggedIn = (level) => ({
 });
 
 /** 造一个按端点分发的假 fetch，并把每次请求记进 log。 */
-function mockFetch({ nav, messages = [], log }) {
+function mockFetch({ nav, messages = [], mentions = [], log }) {
   const routes = [
     ['/x/frontend/finger/spi', () => ({ code: 0, data: { b_3: 'BV3-FAKE', b_4: 'BV4-FAKE' } })],
     ['/x/web-interface/nav', () => nav],
     ['/x/msgfeed/reply', () => ({ code: 0, data: { items: messages, cursor: {}, last_view_at: 0 } })],
+    // 「@我的」是另一个接口（巡逻现在也会读它，否则主人在评论里 @ 她没反应）。
+    ['/x/msgfeed/at', () => ({ code: 0, data: { items: mentions, cursor: {} } })],
     ['/x/web-interface/wbi/index/top/feed/rcmd', () => ({ code: 0, data: { item: [VIDEO_LIST_ITEM] } })],
     ['/x/web-interface/popular', () => ({ code: 0, data: { list: [VIDEO_LIST_ITEM] } })],
     ['/x/web-interface/ranking/v2', () => ({ code: 0, data: { list: [VIDEO_LIST_ITEM] } })],
@@ -374,6 +376,67 @@ async function runScheduled(env) {
 
   const again = await (await call(env, '/patrol', { method: 'POST' })).json();
   check('D: 同一视频不会重复排队（queueDraft 按 bvid 覆盖）', () => assert.equal(again.videoComments.queued, 1));
+}
+
+// ── 场景 E：陌生人回复的额度开关 + 「@我的」里的动态评论（type=17）─────────────
+{
+  const strangerMessage = {
+    id: 90210,
+    user: { mid: 1049033797, nickname: '路过的客人' },
+    item: { type: 'reply', source_id: 777, uri: `https://www.bilibili.com/video/${BVID}` },
+    reply: { rpid: 778, root_id: 777, content: { message: '这个视频讲得真好' }, ctime: Math.floor(Date.now() / 1000) },
+  };
+  const dynamicMention = {
+    id: 90211,
+    user: { mid: Number(OWNER_MID), nickname: '懒寻真' },
+    item: {
+      type: 'at',
+      business: 'dynamic',
+      source_id: 880,
+      root_id: 880,
+      subject_id: 117258059782954,
+      source_content: '@bili_83352132154 这条动态说得对',
+      at_time: Math.floor(Date.now() / 1000),
+    },
+  };
+
+  // ① 默认（replyToOthers 未关）+ 取消最小间隔：陌生人和主人的 @ 各回一条。
+  {
+    const kv = fakeKV();
+    const log = [];
+    const env = makeEnv(kv, { ...BASE_VARS, OBSERVE_ONLY: 'false', MIN_INTERVAL_SECONDS: '0', MIN_INTERVAL_SECONDS_OWNER: '0' });
+    globalThis.fetch = mockFetch({ nav: navLoggedIn(3), messages: [strangerMessage], mentions: [dynamicMention], log });
+
+    const patrol = await (await call(env, '/patrol', { method: 'POST' })).json();
+    check('E: 巡检无错误', () => assert.deepEqual(patrol.errors, []));
+    check('E: 陌生人和主人的 @ 都回了', () => assert.equal(patrol.inbox.replied, 2));
+    check('E: 动态下的评论走 type=17（oid 是动态 id）', () => {
+      const posts = postedTo(log, '/x/v2/reply/add').map(formOf);
+      const dyn = posts.find((form) => String(form.type) === '17');
+      assert.ok(dyn !== undefined, '应该有一条 type=17 的回复');
+      assert.equal(dyn.oid, '117258059782954');      assert.equal(posts.filter((form) => String(form.type) === '1').length, 1, '视频那条仍是 type=1');
+    });
+    check('E: 回复正文不是空壳', () => {
+      const posts = postedTo(log, '/x/v2/reply/add').map(formOf);
+      assert.ok(posts.every((form) => String(form.message).length > 0));
+    });
+  }
+
+  // ② 关掉陌生人（REPLY_TO_OTHERS=false）：只回主人的 @。
+  {
+    const kv = fakeKV();
+    const log = [];
+    const env = makeEnv(kv, { ...BASE_VARS, OBSERVE_ONLY: 'false', REPLY_TO_OTHERS: 'false' });
+    globalThis.fetch = mockFetch({ nav: navLoggedIn(3), messages: [strangerMessage], mentions: [dynamicMention], log });
+
+    const patrol = await (await call(env, '/patrol', { method: 'POST' })).json();
+    check('E: replyToOthers=false 时陌生人不回', () => assert.equal(patrol.inbox.replied, 1));
+    check('E: 关掉陌生人后只有主人那条 @ 被回', () => {
+      const posts = postedTo(log, '/x/v2/reply/add').map(formOf);
+      assert.equal(posts.length, 1);
+      assert.equal(String(posts[0].type), '17');
+    });
+  }
 }
 
 console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`);

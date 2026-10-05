@@ -8,7 +8,7 @@
  * 顺带替宿主做两件云端值班的事：报心跳（告诉云端「本机在岗」）、
  * 定期把遥控台上主人点过头的草稿发出去。
  */
-import { runDmCheck } from '../lib/index.js';
+import { runDmCheck, runReplyCheck } from '../lib/index.js';
 import { appendLog, resolveConfig } from '../lib/config.js';
 import { heartbeat, syncOnce } from '../lib/cloudsync.js';
 import { buildBiliTools } from '../lib/tools.js';
@@ -22,6 +22,8 @@ const minutes = Math.max(0.25, Number(flag('minutes', '10')) || 10);
 const once = args.includes('--once');
 /** 每多少轮做一次完整云端交接（20 秒 × 15 轮 = 5 分钟）。 */
 const syncEvery = Math.max(1, Number(flag('sync-every', '15')) || 15);
+/** 每多少轮看一次「谁回了她 / @ 了她」（20 秒 × 15 轮 = 5 分钟）。 */
+const replyEvery = Math.max(1, Number(flag('reply-every', '15')) || 15);
 let round = 0;
 
 /** 本机在岗时本机就是云端的「手」：把主人点过头的草稿发出去。 */
@@ -53,6 +55,18 @@ async function tick() {
     await heartbeat({});
   } catch {
     /* 网络不通也照跑本机的活 */
+  }
+
+  // 评论区也归看门鲸管：别人回了她 / @ 了她，该回的就回一句（限流在 checkReply 里）。
+  if (round % replyEvery === 0) {
+    try {
+      const outcome = await runReplyCheck({});
+      if ((outcome?.replied ?? 0) > 0) console.log(`[${stamp}] 评论回复：回了 ${outcome.replied} 条`);
+      else if ((outcome?.pending ?? 0) > 0) console.log(`[${stamp}] 评论回复：待回 ${outcome.pending} 条，这轮没到该回的时候`);
+    } catch (error) {
+      console.log(`[${stamp}] 评论回复失败：${error.message}`);
+      appendLog('auto.log', `dm-watch 评论回复失败：${error.message}`);
+    }
   }
 
   if (round % syncEvery === 0) {

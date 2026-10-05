@@ -211,10 +211,24 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
   // ── 2. 消息中心 → 自动回复 ──────────────────────────────────────────────────
   if (summary.loggedIn) {
     try {
+      // 「回复我的」和「@我的」是两个接口：只读前者时，主人在评论里 @ 她会毫无反应。
       const feed = await client.msgReplies({ ps: 20 });
-      summary.inbox.total = feed.items.length;
+      let mentionFeed = { items: [] };
+      try {
+        mentionFeed = await client.msgMentions({ ps: 20 });
+      } catch (issue) {
+        summary.errors.push(`读「@我的」：${issue instanceof BiliError ? `${issue.code} ${issue.message}` : String(issue?.message ?? issue)}`);
+      }
+      const inboxItems = [...(mentionFeed.items ?? []), ...feed.items];
+      summary.inbox.total = inboxItems.length;
       const seenThreads = new Set();
-      for (const item of feed.items) {
+      // 一轮最多回几条（policy.replyPerRun），陌生人另有更小的额度（replyPerRunOthers）。
+      const perRun = Math.max(1, Number(cfg.policy?.replyPerRun ?? 3) || 3);
+      const perRunOthers = Math.max(0, Number(cfg.policy?.replyPerRunOthers ?? 1) || 0);
+      const toOthers = cfg.policy?.replyToOthers !== false;
+      let othersDone = 0;
+      for (const item of inboxItems) {
+        if (summary.inbox.replied >= perRun) break;
         try {
           if (item.mid === null || item.mid === undefined || String(item.mid) === String(selfMid)) continue;
           const replyRoot = item.root || item.rpid;
@@ -226,6 +240,14 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
             continue;
           }
           const owner = isOwnerTarget(cfg, { mid: item.mid, uname: item.uname });
+          if (!owner && !toOthers) {
+            summary.inbox.skipped += 1;
+            continue;
+          }
+          if (!owner && othersDone >= perRunOthers) {
+            summary.inbox.skipped += 1;
+            continue;
+          }
           const answered = threadReplyCount(ledger, replyRoot, item.mid) > 0;
           if (answered && !owner) {
             ledger.msgSeen[String(item.id)] = { at: new Date().toISOString(), skipped: '这串已经回过了' };
@@ -233,17 +255,52 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
             continue;
           }
           const ref = videoRefFromMessage(item);
-          if (ref === null) {
+          // 动态下面的评论：oid 就是动态 id（subject_id），走 type=17 发得出去；认不出就跳过。
+          const rawBusiness = String(item.business ?? '');
+          const hasBvid = typeof ref?.bvid === 'string' && ref.bvid !== '';
+          const isDynamic = hasBvid !== true && (rawBusiness === 'dynamic' || rawBusiness === '动态');
+          if (ref === null && !isDynamic) {
             ledger.msgSeen[String(item.id)] = { at: new Date().toISOString(), skipped: '认不出视频 id' };
             summary.inbox.skipped += 1;
             continue;
           }
-          const target = { mid: item.mid, uname: item.uname, message: item.message, subject: item.subject };
-          const draft = await draftReply(env, cfg, { target, parentText: item.myMessage || item.message });
+          // @ 我的消息里 `oid` 是那条 @ 评论的 rpid，不是被评论的对象：动态认 subject_id、视频认 BV 号。
+          const oid = isDynamic
+            ? String(item.dynamicId ?? item.aid ?? item.oid)
+            : String(ref.bvid ?? ref.aid ?? item.oid);
+          // 把视频信息、她自己的原话、楼上这一串一起喂给脑子，回复才接得住话。
+          let detail = null;
+          if (!isDynamic) {
+            try {
+              detail = await client.video(oid);
+            } catch {
+              detail = null;
+            }
+          }
+          let thread = [];
+          if (!isDynamic) {
+            try {
+              const rows = await client.threadReplies({ aid: detail?.aid ?? ref.aid, bvid: detail?.bvid ?? ref.bvid, root: replyRoot, ps: 20 });
+              thread = rows?.replies ?? [];
+            } catch {
+              thread = [];
+            }
+          }
+          const recentReplies = Object.values(ledger.replies ?? {}).slice(-5).map((row) => String(row?.text ?? '')).filter((line) => line !== '');
+          const target = { mid: item.mid, uname: item.uname, message: item.message, subject: item.subject, isOwner: owner };
+          const draft = await draftReply(env, cfg, {
+            target,
+            theirText: item.message,
+            selfText: item.myMessage,
+            thread,
+            recentReplies,
+            video: detail,
+            subject: item.subject,
+          });
           const verdict = checkReply({
             cfg,
             ledger,
-            bvid: ref.bvid ?? ref.aid,
+            bvid: ref?.bvid ?? ref?.aid ?? oid,
             root: replyRoot,
             rpid: item.rpid,
             message: draft,
@@ -267,19 +324,19 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
             summary.inbox.deferred += 1;
             continue;
           }
-          const detail = await client.video(ref.bvid ?? ref.aid);
           const created = await client.commentAdd({
-            aid: detail.aid,
-            bvid: detail.bvid,
+            aid: isDynamic ? oid : (detail?.aid ?? ref?.aid),
+            bvid: detail?.bvid ?? ref?.bvid ?? null,
             message: draft,
             root: verdict.rootRpid,
             parent: item.rpid,
             mentions: ownerMentionList(cfg),
+            type: isDynamic ? 17 : 1,
           });
           const selfRpid = created?.rpid ?? null;
           recordReply(ledger, {
-            bvid: detail.bvid,
-            aid: detail.aid,
+            bvid: detail?.bvid ?? ref?.bvid ?? null,
+            aid: isDynamic ? Number(oid) : (detail?.aid ?? ref?.aid),
             rpid: item.rpid,
             root: verdict.rootRpid,
             targetMid: item.mid,
@@ -292,6 +349,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
           });
           ledger.msgSeen[String(item.id)] = { at: new Date().toISOString(), auto: true, selfRpid };
           summary.inbox.replied += 1;
+          if (!owner) othersDone += 1;
         } catch (issue) {
           summary.errors.push(`回复 ${item?.uname ?? item?.mid}：${issue instanceof BiliError ? `${issue.code} ${issue.message}` : String(issue?.message ?? issue)}`);
         }

@@ -111,17 +111,49 @@ export async function draftVideoComment(env, cfg, video) {
   return sanitize(final, { maxChars: Math.min(Number(cfg?.maxCommentChars) || 200, 200) });
 }
 
-/** 生成一条回复（回主人或客人）。 */
-export async function draftReply(env, cfg, { target, parentText = '' } = {}) {
+/**
+ * 生成一条回复（回主人或客人）。
+ *
+ * 主人 2026-10-05：「完善一下评论回复」。原来的提示词只塞了「对方那句话」——
+ * 而且塞错了一处：`parentText` 传的是 `item.myMessage`（**她自己**那条评论的原文），
+ * 模型却会把读到的这句当成「对方说的」。现在分成两个字段：`selfText` 是她自己的原话，
+ * `theirText` 是对方刚说的那句，另外补上视频信息、楼上这一串、最近回过的话（防复读）。
+ */
+export async function draftReply(env, cfg, { target, selfText = '', theirText = '', parentText = '', thread = [], recentReplies = [], video = null, subject = '' } = {}) {
   const name = String(target?.uname ?? target?.toName ?? '').trim() || '对方';
   const isOwner = target?.isOwner === true;
+  const their = String(theirText || parentText || '').replace(/\s+/g, ' ').slice(0, 200);
+  const self = String(selfText).replace(/\s+/g, ' ').slice(0, 120);
+  const title = String(video?.title ?? subject ?? '').slice(0, 80);
+  const brief = [
+    title === '' ? '' : `视频/动态：${title}`,
+    String(video?.author ?? '').trim() === '' ? '' : `UP：${String(video.author).slice(0, 24)}`,
+    Array.isArray(video?.tags) && video.tags.length > 0 ? `标签：${video.tags.slice(0, 6).join('、')}` : '',
+    String(video?.desc ?? '').trim() === '' ? '' : `简介：${String(video.desc).replace(/\s+/g, ' ').slice(0, 140)}`,
+  ].filter((line) => line !== '').join('\n');
+  const threadText = (Array.isArray(thread) ? thread : [])
+    .filter((row) => String(row?.message ?? '').trim() !== '')
+    .slice(-6)
+    .map((row, index, list) => `${row.fromMe === true ? '人家' : String(row.uname ?? name)}：${String(row.message).replace(/\s+/g, ' ').slice(0, 60)}${index === list.length - 1 ? '   ← 对方最新这句' : ''}`)
+    .join('\n');
+  const recent = (Array.isArray(recentReplies) ? recentReplies : [])
+    .filter((line) => String(line ?? '').trim() !== '')
+    .slice(0, 5)
+    .map((line) => `- ${String(line).replace(/\s+/g, ' ').slice(0, 50)}`)
+    .join('\n');
   const text = await aiText(env, {
     model: cfg?.personaModel,
     user: [
-      `对方（${name}${isOwner ? '，是你的主人，要格外亲昵、优先照顾' : '，是客人，客气可爱、一人一条不纠缠'}）在 B 站的评论是：`,
-      `「${String(parentText).slice(0, 200)}」`,
-      '请写一条回复（15～60 字，按铁律来，只输出回复正文）。',
-    ].join('\n'),
+      `对方（${name}${isOwner ? '，是你的主人，要格外亲昵、优先照顾，可以直接接话' : '，是客人，客气可爱、一人一条不纠缠'}）在 B 站的评论是：`,
+      `「${their}」`,
+      brief === '' ? '' : `\n${brief}`,
+      self === '' ? '' : `\n你自己先说的那条：${self}`,
+      threadText === '' ? '' : `\n楼上这一串（时间正序）：\n${threadText}`,
+      recent === '' ? '' : `\n你最近已经回过别人的话（别重复这些、别用同一个句式）：\n${recent}`,
+      isOwner
+        ? '\n请写一条回复（15～60 字，按铁律来，只输出回复正文）。'
+        : '\n请写一条回复（15～60 字，按铁律来，只输出回复正文）。不要透露主人的任何信息（昵称、UID、私信内容），不要承诺帮对方做事、不要交换联系方式。',
+    ].filter((line) => line !== '').join('\n'),
   });
   const final = text !== null && text.length > 0 ? text : fallbackReply(target);
   return sanitize(final, { maxChars: Math.min(Number(cfg?.maxCommentChars) || 200, 200) });

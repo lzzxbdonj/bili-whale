@@ -118,39 +118,23 @@ function makeRunner(tools) {
   };
 }
 
-/** 主人优先的评论回复：主人（或另一位主人）在评论区点了她，就用脑子回一条真的。 */
-async function replyOwners(run, { cfg }) {
-  if (cfg.policy?.postReply === 'off') return { replied: 0, pendingOwnerComments: 0 };
-  const { composeCommentReply } = await import('../lib/compose.js');
-  const inbox = await run('bili_inbox', { op: 'check', count: 10 });
-  const targets = (inbox?.targets ?? []).filter(
-    (item) => item.owner === true && item.answered !== true && item.oid !== null && item.oid !== undefined,
-  );
-  if (targets.length === 0) return { replied: 0, pendingOwnerComments: 0 };
-  for (const target of targets) {
-    // 只处理视频评论（动态/专栏的 oid 不能当视频 aid 用）。
-    if (target.business !== '' && target.business !== 'reply' && target.business !== 'video') continue;
-    const video = await run('bili_video', { id: String(target.oid) });
-    const message = await composeCommentReply({
-      cfg,
-      video,
-      comment: { uname: target.uname, message: target.message },
-      extra: `对方是主人（${target.uname}），回得亲昵一点、别客套。`,
-    });
-    if (message === null) continue;
-    const sent = await run('bili_reply', {
-      id: String(target.oid),
-      rpid: target.rpid,
-      root: target.replyRoot,
-      mid: target.mid,
-      uname: target.uname,
-      message,
-      confirm: true,
-    });
-    // 一轮只回主人一条，别刷屏。
-    return { replied: sent?.allowed === false ? 0 : 1, pendingOwnerComments: targets.length, blocked: sent?.allowed === false ? (sent.reasons ?? []).join('；') : '' };
-  }
-  return { replied: 0, pendingOwnerComments: targets.length };
+/**
+ * 评论回复：主人（或另一位主人）在评论区点了她，就用脑子回一条真的；
+ * 陌生人回复她也在额度里回（`policy.replyToOthers` / `replyPerRunOthers` 可关）。
+ *
+ * 编排在 `lib/reply.js`（宿主定时器、看门鲸、这里共用一份），
+ * 这里只负责把 `run` 执行器和账本递进去。
+ */
+async function replyInbox(run, { cfg }) {
+  if (cfg.policy?.postReply === 'off') return { replied: 0, pending: 0, drafts: [], failed: [], skipped: [] };
+  const { runInboxReplies } = await import('../lib/reply.js');
+  const { loadLedger } = await import('../lib/ledger.js');
+  return await runInboxReplies({
+    cfg,
+    ledger: loadLedger(),
+    run,
+    log: (line) => say(`  · ${line}`),
+  });
 }
 
 /** 挑视频 → 写评论：默认 confirm 时只排队，等遥控台点头。 */
@@ -340,11 +324,16 @@ async function main() {
       }
     }
 
-    // ③ 评论区：主人的回复 + 视频一级评论草稿。
+    // ③ 评论区：该回的评论（主人优先，陌生人在额度内）+ 视频一级评论草稿。
     if (TASK === 'patrol') {
-      const inbox = await replyOwners(run, { cfg });
-      if (inbox.replied > 0) summary.push('已回主人 1 条评论');
-      else if (inbox.pendingOwnerComments > 0) summary.push(`主人的评论待回 ${inbox.pendingOwnerComments} 条${inbox.blocked ? `（被拦：${inbox.blocked.slice(0, 60)}）` : ''}`);
+      const inbox = await replyInbox(run, { cfg });
+      if (inbox.replied > 0) {
+        const who = inbox.drafts.slice(0, 3).map((item) => `${item.uname}${item.owner ? '(主人)' : ''}`).join('、');
+        summary.push(`回评论 ${inbox.replied} 条：${who}`);
+      } else if (inbox.pending > 0) {
+        summary.push(`评论待回 ${inbox.pending} 条${inbox.failed.length > 0 ? `（没回成：${String(inbox.failed[0]?.reason ?? '').slice(0, 60)}）` : ''}`);
+      }
+      for (const item of inbox.failed.slice(0, 2)) summary.push(`评论回复失败（${item.uname}）：${String(item.reason).slice(0, 60)}`);
 
       const picked = await patrolComments(run, { cfg, pending: state.pending });
       if (picked.queued.length > 0) {
