@@ -747,3 +747,35 @@ console.log(await runReplyCheck({}));
 6. **上线**：提交 `768f122`；插件目录 `lib/intent.js` / `lib/dmcmd.js` / `test/dmcmd.test.mjs` MD5 全 `same`；
    看门鲸重启为 pid **19924**（14:54 起，`dm-watch.err.log` 0 字节）。
 
+
+## 11. 2026-10-05 傍晚：「评论又开始重复回复了」——两个写手 + 账本丢更新（已修）
+
+1. **事故（主人 2026-10-05 报「评论又开始重复回复了」）**：`logs/actions.log` 里
+   `rpid 316071900673`（oid 117258059782954，主人那条）被回了 **6 遍**（02:17:14 / 02:31:26 / 02:32:05 /
+   02:34:53 / 02:39:52 / 02:44:52Z，06:53:49 又来一遍）；`rpid 316093531889` 回了 3 遍
+   （05:11:22 / 06:55:17 / 06:56:20）——同一条评论一分钟内被回两次。
+2. **根因（不是忘了去重，是去重记录被互相盖掉了）**
+   - 本机有**两个写手**：DSH 宿主的回复定时器（`lib/index.js:376` `replyCheckMinutes`，2 分钟一轮）
+     与看门鲸 `tools/dm-watch.mjs --reply-every 6`（20 秒一轮 ⇒ 每 2 分钟回一次）。
+   - 两边各自 `loadLedger()` 拿一份快照 → 各回一条 → 各 `saveLedger()`（整份覆盖写）。
+     后写的把先写的记录盖掉（丢更新）：账本里 6 条 reply 指向同一个 rpid，05:11/06:53/06:55
+     三条**根本没落盘**（replies 15 → 下一次读 14）。
+   - 记录一丢，`repliedToComment` 就失忆，下一轮又追着同一条评论回一遍。
+3. **修法（四刀）**
+   - **跨进程锁** `lib/lock.js`（新文件）：`withLock(name, run, { waitMs, pollMs, staleMs })`，
+     锁文件 `statePath('locks/<name>.lock')` 里写 `pid=… at=… job=…`，独占创建（`wx`）、
+     超 `staleMs`（3 分钟）当持有者崩了抢过来、跑完删掉；另导出 `lockHolder(name)` 排查用。
+   - **并集落盘** `lib/ledger.js` 的 `saveLedgerMerged(ledger)`：`mergeLedger(loadLedger(), ledger)`
+     之后再写（只给只增不减的动作用；`op=forget`、`takeMaterial` 这类会删记录的仍走 `saveLedger`）。
+     `lib/tools.js` 三处「对外说话」的落盘（`bili_comment` / `bili_reply` / `bili_dynamic`）改用它。
+   - **发之前重读磁盘** `lib/reply.js`：`runInboxReplies` 先抢 `reply-round` 锁（只等 3 秒，撞车就让路，
+     返回 `locked: false`），发每条之前再用 `freshLedger()` 读一次磁盘账本，
+     别人刚回过的（本条 rpid / 这一串 root）直接跳过并写清理由。
+   - **`lib/sync.js` 与 `cloudflare/src/sync.js` 补 `watched` 合并键**（否则并集保存会把
+     「她刷到过什么」并丢）。
+4. **测试**：新增 `test/dup-reply.test.mjs`（锁的互斥与清理、老写法丢更新 vs 并集保存、
+   发前重读拦住「别人刚回过」、抢不到锁那一轮不动手）；`test/reply.test.mjs` 改用临时 `DSH_HOME`
+   （不然新加的重读会读到真账本里那条事故 rpid）。**十二套全绿**（十套 `test/*` + 两套 `cloudflare/test/*`）。
+5. **上线**：提交见仓库；插件目录七个文件 MD5 全 `same`；看门鲸重启为 pid **22036**（15:02 起）。
+   ⚠ **宿主里的插件还是 13:15 那份老代码**（没有锁、没有重读、还是覆盖写）——
+   要彻底断根得重启一次 DSH；在那之前如果又见到重复回复，先看 `logs/auto.log` 里是哪条链路的节奏。

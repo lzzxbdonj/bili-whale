@@ -27,6 +27,8 @@ const KEYS = {
   favorites: (item) => `${item?.aid ?? item?.bvid ?? ''}`,
   study: (item) => `${item?.bvid ?? item?.ts ?? ''}`,
   dmIncoming: (item) => `${item?.mid ?? ''}:${item?.msgKey ?? item?.ts ?? ''}`,
+  // 「她刷到过什么」也要并起来：一天一条（key = bvid/av号 + 日期），别让合并把痕迹抹了。
+  watched: (item) => `${item?.key ?? item?.bvid ?? item?.aid ?? ''}:${item?.date ?? ''}`,
   materials: (item) => `${item?.ts ?? ''}:${String(item?.text ?? '').slice(0, 40)}`,
 };
 

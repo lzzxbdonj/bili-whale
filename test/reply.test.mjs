@@ -15,11 +15,21 @@
  * 用法：node test/reply.test.mjs
  */
 import { strict as assert } from 'node:assert';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { BiliClient } from '../lib/api.js';
 import { buildReplyPrompt, composeCommentReply } from '../lib/compose.js';
 import { pickReplyTargets, replyLimits, runInboxReplies } from '../lib/reply.js';
 import { emptyLedger, recordReply, repliedToComment } from '../lib/ledger.js';
 import { checkReply } from '../lib/policy.js';
+
+// 临时 DSH_HOME：回复链路现在会在**发之前重读磁盘账本**（防两个写手重复回复），
+// 这里要是读到真账本就糟了 —— 真账本里正好躺着这条事故 rpid 316071900673，
+// 会跟下面的夹具打架（测试会因为「刚被别的进程回过」一条都不发）。
+const HOME = join(tmpdir(), `dsh-reply-test-${Date.now()}`);
+process.env.DSH_HOME = HOME;
+mkdirSync(join(HOME, 'bilibili-whale', 'logs'), { recursive: true });
 
 const CFG = {
   ownerName: '懒寻真',
