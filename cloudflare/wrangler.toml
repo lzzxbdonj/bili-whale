@@ -43,9 +43,13 @@ DAILY_DYNAMIC_AT = "20:30"
 FEED_SOURCE = "popular"
 
 # —— 观察模式 ——
-# true = 只读 + 排队（不发任何写请求）。账号还是 Lv0 未转正时保持 true，
-# 主人做完转正答题后改成 false 并重新 deploy（或 POST /config {"observeOnly":false}）。
-OBSERVE_ONLY = "true"
+# true = 只读 + 排队（不发任何写请求）；false = 允许 Worker 自己动手。
+# 主人 2026-10-05 下午发话「开始往云端搬项目，观察模式关掉」⇒ 改 false 并重新 deploy。
+# 注意：Worker 的出口 IP 被 B 站 -412 拦着，它其实登录不上（nav.isLogin=false），
+# 所以真正干活的是 GitHub Actions 那条线（cloud/run.mjs，本来就不看这个开关）。
+# 这个开关现在只影响：① Worker 自己那次 cron 巡检的 canWrite；② 遥控台手动发
+# （/comment、/reply、/dynamic 在 true 时会回 409）。
+OBSERVE_ONLY = "false"
 
 # —— 文案模型（Workers AI）——
 PERSONA_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
