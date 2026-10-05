@@ -685,3 +685,39 @@ console.log(await runReplyCheck({}));
    看门鲸重启为 pid **29148**（14:37:12）。
 6. **还没来得及验的**：KV 免费写额度要到 **00:00Z（北京 08:00）** 才恢复，所以「云端自己顶上 + `healConfig` 真跑一遍」只能等那时看 GH 日志。
 
+## 9. 2026-10-05 傍晚：「主人随心所欲」（`policy.ownerUnlimited` 真正生效）
+
+主人原话（m03241）：**「给她账号的最大权限，让她接受我的指令之后可以随心所欲」**。
+
+1. **以前 `ownerUnlimited: true` 是个摆设**：默认值里写着「主人永远优先，不受『每人一条』限制」，
+   但**没有任何代码读它**；真正能免限额/免间隔/免去重的只有 `isDebugOwner`（调试档名单里的那一位）。
+2. **新判定只剩一处口径**：`ownerFree(cfg, { owner, force })` = `force === true || (owner === true && cfg?.policy?.ownerUnlimited !== false)`
+   （`lib/policy.js` 与 `cloudflare/src/policy.js` 各一份，逐字一致）。
+   语义是「**下指令的人是主人**」（不是「被回的人是主人」）。`force` 不是免护栏 ——
+   屏蔽词、`maxCommentChars`、`postXxx = off`、`allowFollow = false`、观察模式、未登录照拦。
+3. **接上 `force` 的地方**
+   - 六个判定函数：`checkVideoComment` / `checkReply` / `checkFollow` / `checkFavorite` / `checkDynamic` / `checkTriple`
+     （force 时跳过每日上限、去重、动作间隔；返回值多一个 `free` 字段，云端镜像同步，port 测试逐字段对拍）。
+   - **回主人那条刻意不因「是主人」免间隔**：`minIntervalSecondsOwner`（15 秒）是防 B 站风控的节奏线，
+     自动巡检连回几条主人评论时还要留着；只有明确是主人的指令（`force`）才免。
+   - `lib/tools.js` 私信命令链：`const forceCmd = ownerFree(cfg, { owner, force: debugOwner })` ——
+     **任何主人**的私信指令都免限，不再限于调试档名单（`runDmCommand`、两条回执、普通寒暄四处）。
+   - 八个写操作工具加了 `force` 参数（`bili_comment` / `bili_reply` / `bili_dynamic` / `bili_study op=dynamic` /
+     `bili_follow` / `bili_favorite` / `bili_triple` / `bili_dm`），一路透传到判定；
+     `bili_triple` 还会把它带到 `tripleVideo` → `commentAfterTriple` → `checkVideoComment`
+     （主人点名刷的视频，三连顺手评论也不再被「评过 / 超每日上限」挡）。
+   - 云端：`cloudflare/src/index.js` 的 `/comment` `/reply` `/dynamic` 收 `body.force === true`（遥控台手动发 = 主人的指令）。
+4. **顺手修的 bug**：`recordFavorite` 原来写的是 `if (ledger.daily?.[dateKey(now)] !== undefined) … +1`，
+   账本里还没建今天的桶就**不计数** ⇒ `dailyFavorites` 上限会被悄悄绕过；
+   改成跟 `recordComment` 一样的 `todayBucket(ledger, now).favorites += 1`（`lib/ledger.js` 与 `cloudflare/src/ledger.js` 两份都改）。
+5. **`cfgVersion: 1 → 2`**（`lib/config.js` DEFAULTS 与 `cloudflare/src/policy.js`）——
+   改的是判定行为，云端 `healConfig` 会在 KV 写额度恢复后把新 policy 推上去。
+6. **测试**：新增 `test/owner-free.test.mjs`（23 项：`ownerFree` 真值表、六个函数的 force 放行、屏蔽词/总开关/分数门槛照拦）。
+   十一套全绿：`test/{smoke,mention-dm,triple,reply,text,dmcmd,debug,sync,owner-free}.test.mjs` +
+   `cloudflare/test/{port,patrol.mock}.test.mjs`。
+7. **上线**：提交 `ac8bef8`（10 files +403/−49）push 为 `cdca2fc..ac8bef8`；
+   Worker 重新 deploy ⇒ 线上版本 `7355d4d4-a299-4c23-869b-c6ded13194bc`；
+   插件目录 8 个文件 MD5 全 `same`；看门鲸重启为 pid **23396**（14:48:08 起，`dm-watch.err.log` 0 字节）。
+8. **还没验的**：真机上「主人私信一句大白话 → 免限真办事」要等下一轮私信；
+   KV 额度 00:00Z 恢复后才看得到 `healConfig` 把 `cfgVersion: 2` 推上云端。
+
