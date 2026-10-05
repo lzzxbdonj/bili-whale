@@ -5,7 +5,8 @@
  *   1. 提示词里没有她自己的原话 / 楼上对话 / 对方是主人还是陌生人 → `buildReplyPrompt`；
  *   2. 只回主人、一轮只回一条、动态下的评论发不出去 → `pickReplyTargets` + `runInboxReplies`；
  *   3. 回复不该每条都挂 @（主人 2026-10-05：「评论不要每一条回复都带上 @」）→ 默认不补尾巴；
- *   4. 回主人要动付费脑子（主人 2026-10-05：「回复主人的时候用付费模型」）→ `prefer: 'paid'`。
+ *   4. 回主人要动付费脑子（主人 2026-10-05：「回复主人的时候用付费模型」）→ `prefer: 'paid'`；
+ *   5. 同一条评论只回一次，**主人也不例外**（2026-10-05 真机：同一 rpid 被追着回了两遍）→ `repliedToComment`。
  *
  * 脑子（模型）不联网：`composeCommentReply` 支持注入 `ask`，这里塞一个假模型。
  *
@@ -15,7 +16,7 @@ import { strict as assert } from 'node:assert';
 import { BiliClient } from '../lib/api.js';
 import { buildReplyPrompt, composeCommentReply } from '../lib/compose.js';
 import { pickReplyTargets, replyLimits, runInboxReplies } from '../lib/reply.js';
-import { emptyLedger, recordReply } from '../lib/ledger.js';
+import { emptyLedger, recordReply, repliedToComment } from '../lib/ledger.js';
 
 const CFG = {
   ownerName: '懒寻真',
@@ -241,6 +242,28 @@ function target(over = {}) {
   });
   assert.deepEqual(ownerAgain.pick.map((row) => row.uname), ['懒寻真']);
 
+  // 但**同一条评论**只回一次 —— 主人也不例外（2026-10-05 真机事故：同一 rpid 被回了两遍）。
+  const dupLedger = emptyLedger();
+  recordReply(dupLedger, { bvid: 'BV16T4y1k7dB', aid: 936177870, rpid: 9701, root: 9700, targetMid: OWNER, targetUname: '懒寻真', text: '好嘞主人～记下啦', selfRpid: 9702, isOwner: true });
+  assert.equal(repliedToComment(dupLedger, 9701), true, '账本里能认出这条评论已经回过');
+  assert.equal(repliedToComment(dupLedger, 9709), false, '没回过的 rpid 不能误判');
+  assert.equal(repliedToComment(null, 9701), false, '没账本也不炸');
+  assert.equal(repliedToComment(dupLedger, null), false, '没 rpid 也不炸');
+  const dupOwner = pickReplyTargets({
+    cfg: CFG,
+    ledger: dupLedger,
+    inbox: { targets: [target({ mid: OWNER, uname: '懒寻真', owner: true, rpid: 9701, replyRoot: 9700 })] },
+  });
+  assert.equal(dupOwner.pick.length, 0, '同一条评论回过了就不能再回，主人也不例外');
+  assert.match(dupOwner.skipped.map((row) => row.reason).join(' '), /这条评论人家已经回过了/u);
+  // 主人在同一个串里**又说了一句新的**（新 rpid）：仍然要答。
+  const ownerNewLine = pickReplyTargets({
+    cfg: CFG,
+    ledger: dupLedger,
+    inbox: { targets: [target({ mid: OWNER, uname: '懒寻真', owner: true, rpid: 9711, replyRoot: 9700 })] },
+  });
+  assert.deepEqual(ownerNewLine.pick.map((row) => row.uname), ['懒寻真'], '主人换了新评论还得答（免的是每人一条，不是同一条回两遍）');
+
   // 关掉陌生人：只回主人。
   const onlyOwner = pickReplyTargets({
     cfg: { ...CFG, policy: { ...CFG.policy, replyToOthers: false } },
@@ -419,4 +442,4 @@ function target(over = {}) {
   assert.equal(seen[1].referer, 'https://www.bilibili.com/video/BV16T4y1k7dB');
 }
 
-console.log('✓ 评论回复测试通过：提示词上下文、回复不带 @、回主人用付费脑子、挑人与额度、动态评论、失败如实回报');
+console.log('✓ 评论回复测试通过：提示词上下文、回复不带 @、回主人用付费脑子、同一条评论只回一次、挑人与额度、动态评论、失败如实回报');

@@ -28,6 +28,7 @@ import {
   recordComment,
   recordDynamic,
   recordReply,
+  repliedToComment,
   snapshotLedger,
   takeMaterial,
   threadReplyCount,
@@ -245,6 +246,12 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
             continue;
           }
           if (!owner && othersDone >= perRunOthers) {
+            summary.inbox.skipped += 1;
+            continue;
+          }
+          // 「同一条评论」这层主人也不免：回过的评论不能再回一遍（不然每轮追着主人一句话刷屏）。
+          if (repliedToComment(ledger, item.rpid)) {
+            ledger.msgSeen[String(item.id)] = { at: new Date().toISOString(), skipped: '这条评论已经回过了' };
             summary.inbox.skipped += 1;
             continue;
           }

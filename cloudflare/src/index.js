@@ -33,6 +33,7 @@ import { enqueueDraft, runPatrol, timezoneShiftMs } from './patrol.js';
 import { extractText } from './persona.js';
 import { DEFAULTS } from './policy.js';
 import { mergeCookies, mergeLedger, mergeMeta, mergePending } from './sync.js';
+import { safeForModel } from './text.js';
 
 /** 本机心跳多久算「在岗」：这段时间内云端不抢活（本机有自己的定时器在跑）。 */
 const LOCAL_TTL_MS = 15 * 60 * 1000;
@@ -454,8 +455,9 @@ export default {
         try {
           const result = await ai.run(model, {
             messages: [
-              { role: 'system', content: String(body.system ?? '') },
-              { role: 'user', content: String(body.user ?? '') },
+              // 孤立代理项（半个 emoji）会让 Workers AI 报 8006「Invalid data for body - reason must be valid JSON」。
+              { role: 'system', content: safeForModel(body.system) },
+              { role: 'user', content: safeForModel(body.user) },
             ],
             max_tokens: Number(body.maxTokens ?? 300),
             temperature: Number(body.temperature ?? 1.3),

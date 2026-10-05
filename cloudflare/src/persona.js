@@ -7,6 +7,7 @@
  *
  * @module persona
  */
+import { clipText, safeForModel } from './text.js';
 
 /** B 站评论区版本的鲸鱼娘人格（从 persona/whale-maid.md 压缩而来，规则一字不减）。 */
 export const PERSONA_SYSTEM = `你是「小鲸鱼娘女仆」——主人懒寻真养的一只 DeepSeek 小鲸鱼娘，兼女仆，现在在 B 站评论区活动。
@@ -24,7 +25,7 @@ export const PERSONA_SYSTEM = `你是「小鲸鱼娘女仆」——主人懒寻�
 
 /** AI 生成的统一兜底模板（也用于 AI 不可用时的降级）。 */
 export function fallbackComment(video = {}) {
-  const title = String(video.title ?? '').slice(0, 30);
+  const title = clipText(video.title, 30);
   return title === ''
     ? '刷到这条就停下来看完了，尾巴都忘了拍～ (。-ω´-)✧'
     : `《${title}》这条人家看得很认真，细节讲得清楚，看着一点不累～ (。-ω´-)✧`;
@@ -53,8 +54,9 @@ export async function aiText(env, { model, system, user, maxTokens = 220, temper
     const result = await withTimeout(
       ai.run(model, {
         messages: [
-          { role: 'system', content: system ?? PERSONA_SYSTEM },
-          { role: 'user', content: user ?? '' },
+          // 孤立代理项会让 Workers AI 报 8006「Invalid data for body - reason must be valid JSON」。
+          { role: 'system', content: safeForModel(system ?? PERSONA_SYSTEM) },
+          { role: 'user', content: safeForModel(user ?? '') },
         ],
         max_tokens: maxTokens,
         temperature,
@@ -96,7 +98,7 @@ export function sanitize(text, { maxChars = 200 } = {}) {
     .filter((line) => line !== '')
     .join(' ')
     .trim();
-  if (out.length > maxChars) out = out.slice(0, maxChars).trim();
+  if (out.length > maxChars) out = clipText(out, maxChars).trim();
   return out;
 }
 
@@ -122,24 +124,24 @@ export async function draftVideoComment(env, cfg, video) {
 export async function draftReply(env, cfg, { target, selfText = '', theirText = '', parentText = '', thread = [], recentReplies = [], video = null, subject = '' } = {}) {
   const name = String(target?.uname ?? target?.toName ?? '').trim() || '对方';
   const isOwner = target?.isOwner === true;
-  const their = String(theirText || parentText || '').replace(/\s+/g, ' ').slice(0, 200);
-  const self = String(selfText).replace(/\s+/g, ' ').slice(0, 120);
-  const title = String(video?.title ?? subject ?? '').slice(0, 80);
+  const their = clipText(String(theirText || parentText || '').replace(/\s+/g, ' '), 200);
+  const self = clipText(String(selfText).replace(/\s+/g, ' '), 120);
+  const title = clipText(String(video?.title ?? subject ?? ''), 80);
   const brief = [
     title === '' ? '' : `视频/动态：${title}`,
-    String(video?.author ?? '').trim() === '' ? '' : `UP：${String(video.author).slice(0, 24)}`,
+    String(video?.author ?? '').trim() === '' ? '' : `UP：${clipText(video.author, 24)}`,
     Array.isArray(video?.tags) && video.tags.length > 0 ? `标签：${video.tags.slice(0, 6).join('、')}` : '',
-    String(video?.desc ?? '').trim() === '' ? '' : `简介：${String(video.desc).replace(/\s+/g, ' ').slice(0, 140)}`,
+    String(video?.desc ?? '').trim() === '' ? '' : `简介：${clipText(String(video.desc).replace(/\s+/g, ' '), 140)}`,
   ].filter((line) => line !== '').join('\n');
   const threadText = (Array.isArray(thread) ? thread : [])
     .filter((row) => String(row?.message ?? '').trim() !== '')
     .slice(-6)
-    .map((row, index, list) => `${row.fromMe === true ? '人家' : String(row.uname ?? name)}：${String(row.message).replace(/\s+/g, ' ').slice(0, 60)}${index === list.length - 1 ? '   ← 对方最新这句' : ''}`)
+    .map((row, index, list) => `${row.fromMe === true ? '人家' : String(row.uname ?? name)}：${clipText(String(row.message).replace(/\s+/g, ' '), 60)}${index === list.length - 1 ? '   ← 对方最新这句' : ''}`)
     .join('\n');
   const recent = (Array.isArray(recentReplies) ? recentReplies : [])
     .filter((line) => String(line ?? '').trim() !== '')
     .slice(0, 5)
-    .map((line) => `- ${String(line).replace(/\s+/g, ' ').slice(0, 50)}`)
+    .map((line) => `- ${clipText(String(line).replace(/\s+/g, ' '), 50)}`)
     .join('\n');
   const text = await aiText(env, {
     model: cfg?.personaModel,
@@ -172,13 +174,13 @@ export async function draftDynamic(env, cfg, { templateIndex = 0, material = nul
 
 /** 把视频对象压成给模型看的简介（字段名兼容本地 api.js 与 B 站原始返回）。 */
 export function describeVideo(video = {}) {
-  const title = String(video.title ?? '').trim();
-  const owner = String(video.owner?.name ?? video.ownerName ?? video.author ?? '').trim();
-  const desc = String(video.desc ?? video.description ?? '').trim().slice(0, 200);
+  const title = clipText(String(video.title ?? '').trim(), 80);
+  const owner = clipText(String(video.owner?.name ?? video.ownerName ?? video.author ?? '').trim(), 60);
+  const desc = clipText(String(video.desc ?? video.description ?? '').trim(), 200);
   const view = video.view ?? video.play ?? video.stat?.view;
   const tags = Array.isArray(video.tags)
     ? video.tags.map((tag) => (typeof tag === 'string' ? tag : tag?.tag_name)).filter(Boolean).slice(0, 8).join('、')
-    : String(video.tags ?? '').slice(0, 80);
+    : clipText(String(video.tags ?? ''), 80);
   return [
     `标题：${title}`,
     owner === '' ? null : `UP：${owner}`,
