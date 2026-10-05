@@ -312,6 +312,11 @@ check('createLedger 形状与源文件 emptyLedger 一致', () => {
     comments: [],
     replies: [],
     dynamics: [],
+    follows: [],
+    dms: [],
+    favorites: [],
+    study: [],
+    dmIncoming: [],
     replyIndex: {},
     replyThreads: {},
     daily: {},
@@ -354,8 +359,8 @@ check('读取类函数：commentedVideo / threadReplyCount / lastReplyTsForUser 
   assert.equal(ledger.lastReplyTsForUser(l, 42), 2000);
   assert.equal(ledger.lastReplyTsForUser(l, 43), 0);
   assert.equal(ledger.dateKey(now), '2026-05-20');
-  assert.deepEqual(ledger.todayCounts(l, now), { videoComments: 1, replies: 1, dynamics: 0 });
-  assert.deepEqual(ledger.todayCounts(l, new Date(2026, 4, 21)), { videoComments: 0, replies: 0, dynamics: 0 });
+  assert.deepEqual(ledger.todayCounts(l, now), { videoComments: 1, replies: 1, dynamics: 0, favorites: 0 });
+  assert.deepEqual(ledger.todayCounts(l, new Date(2026, 4, 21)), { videoComments: 0, replies: 0, dynamics: 0, favorites: 0 });
 });
 
 check('记录类函数就地修改并返回同一个账本（动态 / 素材）', () => {
@@ -366,7 +371,7 @@ check('记录类函数就地修改并返回同一个账本（动态 / 素材）'
   ledger.recordDynamic(l, { text: '学习打卡', dynId: 'd1', ts: 6, now });
   assert.equal(ledger.dynamicPostedToday(l, now), true);
   assert.equal(ledger.dynamicPostedToday(l, new Date(2026, 4, 21)), false);
-  assert.deepEqual(ledger.todayCounts(l, now), { videoComments: 1, replies: 0, dynamics: 1 });
+  assert.deepEqual(ledger.todayCounts(l, now), { videoComments: 1, replies: 0, dynamics: 1, favorites: 0 });
   ledger.pushMaterial(l, '素材一');
   ledger.pushMaterial(l, '素材二');
   assert.equal(ledger.takeMaterial(l), '素材一');

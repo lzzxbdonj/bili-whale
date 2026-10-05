@@ -68,8 +68,8 @@ export async function aiText(env, { model, system, user, maxTokens = 220, temper
   }
 }
 
-/** 从 Workers AI 的各种返回形状里抠出文本。 */
-function extractText(result) {
+/** 从 Workers AI 的各种返回形状里抠出文本（也借给 /brain 接口用）。 */
+export function extractText(result) {
   if (result === null || result === undefined) return '';
   if (typeof result === 'string') return result;
   if (typeof result.response === 'string') return result.response;

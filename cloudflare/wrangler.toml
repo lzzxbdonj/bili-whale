@@ -42,7 +42,7 @@ FEED_SOURCE = "popular"
 OBSERVE_ONLY = "true"
 
 # —— 文案模型（Workers AI）——
-PERSONA_MODEL = "@cf/qwen/qwen1.5-14b-chat-awq"
+PERSONA_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
 # —— KV：账本 / 待确认草稿 / 运行时指纹 / 主人覆盖的配置 ——
 [[kv_namespaces]]

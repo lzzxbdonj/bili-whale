@@ -17,6 +17,49 @@
  */
 import { keyFromUrl, signUrl } from './wbi.js';
 
+/**
+ * 把正文里出现的 `@昵称` 切成 B 站富文本节点：命中的变成真 @ 节点
+ * （type=2 + biz_id=UID），其余保持纯文本（type=1）。昵称长的优先匹配。
+ *
+ * 实测结论：动态里只写纯文本 `@昵称` 时服务端**不会**解析成 @（detail 只有
+ * RICH_TEXT_NODE_TYPE_TEXT、@ 节点 0 个，被 @ 的人收不到通知）；必须发结构化的
+ * type=2 节点才会生成 RICH_TEXT_NODE_TYPE_AT 并触发通知。（评论区不同，纯文本 @ 会被解析。）
+ *
+ * @param {string} text - 动态正文。
+ * @param {Array<{name: string, mid: string|number}>} mentions - 可 @ 的人（名字 + UID）。
+ * @returns {Array<{raw_text: string, type: number, biz_id: string}>} contents 节点数组。
+ */
+export function buildRichContents(text, mentions = []) {
+  const source = String(text ?? '');
+  const list = (Array.isArray(mentions) ? mentions : [])
+    .map((item) => ({
+      name: typeof item?.name === 'string' ? item.name.trim() : '',
+      mid: item?.mid === undefined || item?.mid === null ? '' : String(item.mid).trim(),
+    }))
+    .filter((item) => item.name !== '' && item.mid !== '')
+    .sort((a, b) => b.name.length - a.name.length);
+  const contents = [];
+  let rest = source;
+  while (rest !== '') {
+    let hit = null;
+    for (const mention of list) {
+      const index = rest.indexOf(`@${mention.name}`);
+      if (index === -1) continue;
+      if (hit === null || index < hit.index) hit = { index, mention };
+    }
+    if (hit === null) {
+      contents.push({ raw_text: rest, type: 1, biz_id: '' });
+      break;
+    }
+    const before = rest.slice(0, hit.index);
+    if (before !== '') contents.push({ raw_text: before, type: 1, biz_id: '' });
+    contents.push({ raw_text: `@${hit.mention.name}`, type: 2, biz_id: hit.mention.mid });
+    rest = rest.slice(hit.index + hit.mention.name.length + 1);
+  }
+  if (contents.length === 0) contents.push({ raw_text: source, type: 1, biz_id: '' });
+  return contents;
+}
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -569,10 +612,12 @@ export class BiliClient {
   }
 
   /** 发一条文字动态。 */
-  async dynamicCreate(text) {
+  async dynamicCreate(text, { mentions = [] } = {}) {
+    const contents = buildRichContents(text, mentions);
+    const atUids = contents.filter((node) => node.type === 2).map((node) => node.biz_id);
     const payload = {
       dyn_req: {
-        content: { contents: [{ raw_text: text, type: 1, biz_id: '' }] },
+        content: { contents },
         scene: 1,
         attach_card: null,
         upload_id: '',
@@ -581,9 +626,11 @@ export class BiliClient {
         orig_dyn_id_str: '',
       },
     };
+    const params = { platform: 'web', csrf: this.csrf() };
+    if (atUids.length > 0) params.at_uids = atUids.join(',');
     const body = await this.request('/x/dynamic/feed/create/dyn', {
       method: 'POST',
-      params: { platform: 'web', csrf: this.csrf() },
+      params,
       json: payload,
       referer: 'https://t.bilibili.com/',
     });

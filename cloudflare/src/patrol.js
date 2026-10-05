@@ -20,7 +20,7 @@
  */
 
 import { BiliClient, BiliError } from './bili.js';
-import { DEFAULTS, checkDynamic, checkReply, checkVideoComment, isOwnerTarget } from './policy.js';
+import { DEFAULTS, checkDynamic, checkReply, checkVideoComment, isOwnerTarget, ownerMentionList } from './policy.js';
 import {
   commentedVideo,
   createLedger,
@@ -379,7 +379,7 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
           state.meta.pendingDynamic = { text, at: new Date().toISOString(), reason: cfg.observeOnly === true ? 'observeOnly' : '未转正/未登录' };
           summary.dynamic.skipped = state.meta.pendingDynamic.reason;
         } else {
-          const created = await client.dynamicCreate(text);
+          const created = await client.dynamicCreate(text, { mentions: ownerMentionList(cfg) });
           recordDynamic(ledger, {
             text,
             dynId: created?.dyn_id_str ?? created?.dynamic_id ?? null,

@@ -14,7 +14,7 @@
  */
 import { BiliClient, BiliError, cookieHeader, hasWriteCredentials } from './bili.js';
 import { createLedger, dateKey, recordComment, recordDynamic, recordReply } from './ledger.js';
-import { checkDynamic, checkReply, checkVideoComment, isOwner } from './policy.js';
+import { checkDynamic, checkReply, checkVideoComment, isOwner, ownerMentionList } from './policy.js';
 import {
   appendCloudLog,
   deepMerge,
@@ -30,6 +30,7 @@ import {
   varsConfig,
 } from './store.js';
 import { enqueueDraft, runPatrol, timezoneShiftMs } from './patrol.js';
+import { extractText } from './persona.js';
 import { DEFAULTS } from './policy.js';
 import { mergeCookies, mergeLedger, mergeMeta, mergePending } from './sync.js';
 
@@ -441,6 +442,32 @@ export default {
         return fail('只支持 GET / POST', 405);
       }
 
+      // —— 免费脑子：把 Workers AI 借给本机 / 手脚当「不要钱的模型」用 ——
+      // 主人要求「回复人用免费模型」，于是本机的 brain.js 默认就来敲这个接口。
+      if (path === '/brain') {
+        if (request.method !== 'POST') return fail('只支持 POST', 405);
+        const body = await readJsonBody(request);
+        if (body === null) return fail('请求体必须是 JSON 对象');
+        const ai = env?.AI;
+        if (ai === undefined || ai === null || typeof ai.run !== 'function') return fail('这朵 Worker 没绑 Workers AI', 503);
+        const model = String(body.model ?? '').trim() || String(env?.PERSONA_MODEL ?? '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+        try {
+          const result = await ai.run(model, {
+            messages: [
+              { role: 'system', content: String(body.system ?? '') },
+              { role: 'user', content: String(body.user ?? '') },
+            ],
+            max_tokens: Number(body.maxTokens ?? 300),
+            temperature: Number(body.temperature ?? 1.3),
+          });
+          const text = extractText(result).trim();
+          if (text === '') return fail('模型没吐字', 502);
+          return json({ ok: true, provider: 'workers-ai', model, text, at: new Date().toISOString() });
+        } catch (error) {
+          return fail(`模型报错：${error.message}`, 502);
+        }
+      }
+
       // —— 心跳：本机报「我在岗」，云端据此让位（本机开机时云端不抢活）——
       if (path === '/heartbeat') {
         const now = Date.now();
@@ -486,6 +513,10 @@ export default {
         if (id === '') return fail('需要 id');
         const draft = state.pending.find((item) => item.id === id);
         if (draft === undefined) return fail(`队列里没有 id=${id} 的草稿`, 404);
+        // 观察模式：连标记都不做，免得手脚拿到 approved 就真发出去。
+        if (state.cfg.observeOnly === true) {
+          return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再点头。', 409);
+        }
         // 只标记「主人点头了」。真发由手脚来做（本机在线就是本机，关机就是 GitHub Actions）：
         // Cloudflare 的出口 IP 被 B 站 -412 拦死，Worker 自己发不出去。
         draft.approved = true;
@@ -661,7 +692,7 @@ async function handleDynamic(env, state, ctx, request) {
     return fail('云端处于观察模式（observeOnly=true），先把观察模式关掉再发。', 409);
   }
   const { client, flush } = makeClient(state, env, ctx);
-  const created = await client.dynamicCreate(text);
+  const created = await client.dynamicCreate(text, { mentions: ownerMentionList(state.cfg) });
   await flush();
   const clock = policyClock(state.cfg);
   // 手动发的动态也要记账，否则同一天巡检还会再发一条

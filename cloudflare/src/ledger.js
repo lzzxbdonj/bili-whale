@@ -21,6 +21,11 @@ export function emptyLedger() {
     comments: [],
     replies: [],
     dynamics: [],
+    follows: [],
+    dms: [],
+    favorites: [],
+    study: [],
+    dmIncoming: [],
     replyIndex: {},
     replyThreads: {},
     daily: {},
@@ -46,6 +51,11 @@ export function createLedger(raw) {
     comments: Array.isArray(value.comments) ? value.comments : [],
     replies: Array.isArray(value.replies) ? value.replies : [],
     dynamics: Array.isArray(value.dynamics) ? value.dynamics : [],
+    follows: Array.isArray(value.follows) ? value.follows : [],
+    dms: Array.isArray(value.dms) ? value.dms : [],
+    favorites: Array.isArray(value.favorites) ? value.favorites : [],
+    study: Array.isArray(value.study) ? value.study : [],
+    dmIncoming: Array.isArray(value.dmIncoming) ? value.dmIncoming : [],
     replyIndex: typeof value.replyIndex === 'object' && value.replyIndex !== null ? value.replyIndex : {},
     replyThreads: typeof value.replyThreads === 'object' && value.replyThreads !== null ? value.replyThreads : {},
     daily: typeof value.daily === 'object' && value.daily !== null ? value.daily : {},
@@ -62,6 +72,9 @@ export function snapshotLedger(ledger) {
   ledger.comments = ledger.comments.slice(-MAX_EVENTS);
   ledger.replies = ledger.replies.slice(-MAX_EVENTS);
   ledger.dynamics = ledger.dynamics.slice(-MAX_EVENTS);
+  ledger.follows = ledger.follows.slice(-MAX_EVENTS);
+  ledger.dms = ledger.dms.slice(-MAX_EVENTS);
+  ledger.study = ledger.study.slice(-MAX_EVENTS);
   ledger.materials = ledger.materials.slice(-MAX_MATERIALS);
   return ledger;
 }
@@ -95,7 +108,7 @@ export function dateKeyUTC(now = new Date()) {
 export function todayBucket(ledger, now = new Date()) {
   const key = dateKey(now);
   if (ledger.daily[key] === undefined) {
-    ledger.daily[key] = { videoComments: 0, replies: 0, dynamics: 0 };
+    ledger.daily[key] = { videoComments: 0, replies: 0, dynamics: 0, favorites: 0 };
   }
   return ledger.daily[key];
 }
@@ -107,6 +120,7 @@ export function todayCounts(ledger, now = new Date()) {
     videoComments: bucket.videoComments ?? 0,
     replies: bucket.replies ?? 0,
     dynamics: bucket.dynamics ?? 0,
+    favorites: bucket.favorites ?? 0,
   };
 }
 
@@ -181,3 +195,22 @@ export function takeMaterial(ledger) {
 
 /** recordComment 的别名（名字里点明是「视频一级评论」，便于调用方区分）。 */
 export const recordVideoComment = recordComment;
+
+/**
+ * 记录一次收藏（刷到好看的视频就收进收藏夹）。`aid` 是去重键。
+ * 与 lib/ledger.js:200-207 逐行等价。
+ */
+export function recordFavorite(ledger, { aid, bvid = '', title = '', upName = '', folderId = null, ts = Date.now(), now = new Date() }) {
+  if (!Array.isArray(ledger.favorites)) ledger.favorites = [];
+  ledger.favorites.push({ aid: Number(aid), bvid, title, upName, folderId, date: dateKey(now), ts });
+  ledger.favorites = ledger.favorites.slice(-500);
+  ledger.lastActionTs = ts;
+  if (ledger.daily?.[dateKey(now)] !== undefined) ledger.daily[dateKey(now)].favorites = (ledger.daily[dateKey(now)].favorites ?? 0) + 1;
+  return ledger;
+}
+
+/** 这个视频是不是已经收过了。 */
+export function favoritedAlready(ledger, aid) {
+  const key = Number(aid);
+  return (ledger.favorites ?? []).some((item) => Number(item.aid) === key);
+}

@@ -244,7 +244,7 @@ async function runScheduled(env) {
 
   await runScheduled(env);
   const afterCron = await (await call(env, '/log')).json();
-  check('A: scheduled() 也能跑通并写日志', () => assert.ok(afterCron.log.some((line) => line.includes('patrol(cron)'))));
+  check('A: scheduled() 也能跑通并写日志', () => assert.ok(afterCron.log.some((line) => line.includes('cron：'))));
   check('A: cron 之后状态仍在 KV 里', () => assert.ok(kv.map.has('state:ledger') && kv.map.has('state:meta')));
 }
 
@@ -344,22 +344,25 @@ async function runScheduled(env) {
   });
 
   const approve = await (await call(env, '/approve', { method: 'POST', body: { id: pending.pending[0].id } })).json();
-  check('D: 主人点头后评论真的发出', () => {
+  check('D: 主人点头只做标记（Worker 出口被 -412 拦死，真发交给手脚）', () => {
     assert.equal(approve.ok, true);
     assert.equal(approve.bvid, BVID);
-    assert.equal(postedTo(log, '/x/v2/reply/add').length, 1);
-    const form = formOf(postedTo(log, '/x/v2/reply/add')[0]);
-    assert.equal(form.oid, '1001');
+    assert.equal(approve.approved, true);
+    assert.equal(postedTo(log, '/x/v2/reply/add').length, 0);
+  });
+
+  const queuedAfter = await (await call(env, '/pending')).json();
+  check('D: 点头后草稿留在队列里等手脚发送', () => {
+    assert.equal(queuedAfter.count, 1);
+    assert.equal(queuedAfter.pending[0].approved, true);
+    assert.notEqual(queuedAfter.pending[0].posted, true);
   });
 
   const after = await (await call(env, '/status')).json();
-  check('D: 队列清空、当日计数 +1', () => {
-    assert.equal(after.pendingCount, 0);
-    assert.equal(after.today.comments, 1);
-  });
+  check('D: 真发出去之前账本不计这条评论', () => assert.equal(after.today.comments, 0));
 
   const again = await (await call(env, '/patrol', { method: 'POST' })).json();
-  check('D: 同一视频不会重复排队（dedupePerVideo）', () => assert.equal(again.videoComments.queued, 0));
+  check('D: 同一视频不会重复排队（queueDraft 按 bvid 覆盖）', () => assert.equal(again.videoComments.queued, 1));
 }
 
 console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`);
