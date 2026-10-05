@@ -490,7 +490,10 @@ export function checkVideoComment({ cfg, ledger, bvid, message, confirm = false,
   }
   const blocked = hitBlocked(text, cfg.policy.blockKeywords);
   if (blocked !== null) reasons.push(`命中屏蔽词「${blocked}」`);
-  if (force !== true && cfg.policy.dedupePerVideo === true && bvid && commentedVideo(ledger, bvid) !== null) {
+  // 同一支视频不重复评论：2026-10-05 主人抱怨「她现在开始重复刷刷过的视频了」以后，
+  // 这道闸改成**默认硬闸、不吃 force**（本机 `lib/policy.js` 同步改）。默认值本来就写着
+  // `dedupePerVideo: true`，漏的是 `force !== true` 那个豁免 —— 主人私信一路带 force，等于没拦。
+  if (cfg.policy.dedupePerVideo !== false && bvid && commentedVideo(ledger, bvid) !== null) {
     reasons.push(`这个视频（${bvid}）已经评论过了`);
   }
   // 每日上限：**0 = 不限**（跟 dailyTriples / dailyRepliesOwner 一个规矩）。

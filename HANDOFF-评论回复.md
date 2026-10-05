@@ -907,3 +907,39 @@ console.log(await runReplyCheck({}));
   （wrangler OAuth 已能自动刷新：账号 `lzzxbdonj@qq.com`、account id `7f95e215a3657abac40bd71856607d2a`、
   namespace `ca2d07df63b548f2bcf95b99d497ac3f`，`workers_kv/workers_scripts` 都有写权限）。
 - **注意**：DSH 宿主里的插件进程是启动时载入的旧代码，**要重启一次 DSH** 才会用上这些地板；看门鲸已重启（pid 7776）。
+
+## §15 「她现在开始重复刷刷过的视频了」（选片不查账本 + force 免去重，两道一起漏）
+
+- **主人原话（2026-10-05）**：「她现在开始重复刷刷过的视频了」。
+- **现场**：`logs/actions.log` 里同一支视频被反复评论 —— `BV1cz421i7k8` 评了 **4 次**
+  （`10:35:21.933Z` / `10:48:47.171Z` / `10:51:04.805Z` / `10:53:28.554Z`，正文一字不差）、
+  `BV1Fd4y1J7w5` 2 次；每次前面都有一条 `dm-intent watch mid=3494364865103885`（主人说「再刷一个」「换一个」）。
+  账本里 `comments` 也留着 3 条同 bvid 的记录。**注意 `ledger.watched` 只有 3 条** —— 去重不是没生效，是**从来没参与决策**。
+- **根因 1（选片不看账本）**：`lib/dmcmd.js` 的 `runWatchSelf` 用 `client.search(topic, 1)` 按播放量降序取前几名，
+  `search` 的排序是固定的 ⇒ **每一轮都挑回同一条**；`runWatch` 的关键词分支同样直接 `slice(0, count)`。
+- **根因 2（去重闸被 force 免掉）**：`lib/policy.js` 原来是
+  `if (force !== true && cfg.policy.dedupePerVideo === true && …)` —— `DEFAULTS` 里 `dedupePerVideo` 本来就是 `true`，
+  真正漏的是 `force !== true`：主人私信那条链一路带 force（`lib/tools.js` 的 `forceCmd = ownerFree(...)`），
+  自动挑片挑回同一支、评论闸又放行，两道一起漏。
+- **顺手挖出的第三个 bug**：`cloud/run.mjs` 的 `patrolComments` 里写的是
+  `if (commentedVideo(ledger, item.bvid) === true)`，而 `commentedVideo` 返回的是账本里那一条（没有就是 `null`）
+  ⇒ 这个判断**永远是 false**，「评过的就别再评」是死代码。已改成 `!== null`。
+- **第四个（测试污染真日志）**：`test/triple.test.mjs` 原来没有临时 `DSH_HOME`，跑一次就往真
+  `logs/actions.log` 里灌 25 条 `comment bvid=BV16T4y1k7dB rpid=31415926 三连顺手 …`，翻日志排障时很容易看岔。
+  `test/triple.test.mjs` + `test/dmcmd.test.mjs` 都补了临时 HOME 前导（`lib/config.js` 的 `dshHome()` 是**调用时**读环境变量，静态 import 之后再设也来得及）。
+- **本次修法**：
+  1. `lib/ledger.js` 新增 `seenVideoSet(ledger)` / `seenVideo(ledger, bvid)` —— 把 `watched`、`study`、`comments`、`favorites`
+     里出现过的 bvid 收成一个 Set（「碰过的就算」）。真机账本实测收出 51 个 bvid。
+  2. `lib/dmcmd.js`：`runWatchSelf` 翻 **3 页**搜索（`client.search(topic, page)`）∪ 去重 → 剔掉 `seen` → 再按播放量挑；
+     全碰过就回「人家按「X」翻了三页，N 条全刷过了～换个方向吧」；关键词刷同理（全碰过就如实说，不回同一支）。
+  3. `lib/study.js` 的 `ensureDailyWatch`：每日兜底那条历史记录也优先挑没碰过的（热门/推荐的头一条整天不变）。
+  4. `lib/policy.js` + `cloudflare/src/policy.js`：去重改为**默认硬闸、不吃 `force`**
+     （`cfg.policy.dedupePerVideo !== false`），想再评一次得显式写 `policy.dedupePerVideo: false`。
+  5. `cloud/run.mjs:242` 的 `=== true` → `!== null`。
+  6. 测试：`test/owner-free.test.mjs` 那条「force = 去重/上限/间隔全让路」按新契约改写成
+     「上限/间隔让路，但同一支片子照拦」；`test/dmcmd.test.mjs` 新增 9.4（连刷两轮不许挑回同一条、全刷过要如实说、
+     `seenVideoSet` 覆盖 watched/study/comments/favorites）；`cloudflare/test/port.test.mjs` 补 force 也拦 + `dedupePerVideo: false` 才放行。
+- **验证**：本机 9 个测试文件 **9/9 通过**；`cloudflare/test/port.test.mjs` **95 项通过**；真机账本上那 4 支重复片子全部落进 `seenVideoSet`。
+- **仍要做**：**重启一次 DSH**（插件进程里还是旧代码），然后看下一轮 `dm-intent watch` 是不是换了片子。
+- **主人若要「就是想让她再评一遍同一支」**：把 `C:\Users\Administrator\.dsh\bilibili-whale\config.json` 里
+  `policy.dedupePerVideo` 写成 `false`（`policy` 是深合并，写这一项即可）。

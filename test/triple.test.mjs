@@ -10,11 +10,21 @@
  * 用法：node test/triple.test.mjs
  */
 import { strict as assert } from 'node:assert';
+import { mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { BiliClient } from '../lib/api.js';
 import { checkTriple, checkVideoComment, pickFolderTitle, DEFAULT_FAVORITE_FOLDER } from '../lib/policy.js';
 import { tripleVideo, reportHistory, tripleConfig } from '../lib/triple.js';
-import { emptyLedger, recordComment, recordFavorite, recentWatched, recordWatched, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
+import { emptyLedger, recordComment, recordFavorite, recentWatched, recordWatched, seenVideo, seenVideoSet, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
 import { ensureDailyWatch } from '../lib/study.js';
+
+// 临时 DSH_HOME：这条链会 `appendLog('actions.log')`，用真家目录会把假客户端的记录灌进真日志
+// （实测：`comment bvid=BV16T4y1k7dB rpid=31415926 三连顺手 text=这条真好玩` 在真 actions.log 里出现了 25 次，
+// 翻日志排障时特别容易看岔）。`dshHome()` 是调用时读环境变量，静态 import 之后再设也来得及。
+const HOME = join(tmpdir(), `dsh-triple-test-${Date.now()}`);
+process.env.DSH_HOME = HOME;
+mkdirSync(join(HOME, 'bilibili-whale', 'logs'), { recursive: true });
 
 const VIDEO = { aid: 936177870, bvid: 'BV16T4y1k7dB', title: '如何炼成超强学习能力？', author: '硬核学长', cid: 123456, durationSec: 600 };
 

@@ -79,14 +79,33 @@ check('没 force：评过的视频 + 超上限 = 两条理由都拦', () => {
   assert.ok(has(verdict, '已经评论过'), `期望「已经评论过」，实际 ${JSON.stringify(verdict.reasons)}`);
   assert.ok(has(verdict, '已达上限'), `期望「已达上限」，实际 ${JSON.stringify(verdict.reasons)}`);
 });
-check('force = 主人点名：去重 / 上限 / 间隔全让路', () => {
+check('force = 主人点名：上限 / 间隔让路，但「同一支视频不重复评论」照拦', () => {
+  // 2026-10-05 改的契约：主人抱怨「她现在开始重复刷刷过的视频了」——
+  // 真机上一次 `BV1cz421i7k8` 被评了 4 遍（选片不查账本 + `force` 免去重，两道闸一起漏）。
+  // 选片那条链已经改成只挑没刷过的；评论这道闸改成**默认硬闸、不吃 force**，
+  // 因为自动挑片那条链本来就带着 `force=true`（`lib/tools.js` 的 `forceCmd = ownerFree(...)`）。
   const cfg = cfgWith({ postVideoComment: 'auto', dailyVideoComments: 1, dedupePerVideo: true });
   const ledger = emptyLedger();
   recordComment(ledger, { bvid: 'BV1ownerfree', aid: 111, rpid: 1, text: '先评一条', now: new Date(NOW) });
-  const verdict = checkVideoComment({
+
+  const again = checkVideoComment({
     cfg, ledger, video: { bvid: 'BV1ownerfree', aid: 111, title: '随便一个标题' }, message: '再来一条', now: NOW, force: true,
   });
-  assert.equal(verdict.allowed, true, JSON.stringify(verdict.reasons));
+  assert.equal(again.allowed, false, '评过的视频，主人点名也不该再评一遍');
+  assert.ok(has(again, '已经评论过'), `期望「已经评论过」，实际 ${JSON.stringify(again.reasons)}`);
+
+  // 没评过的视频：force 照样让路（上限 1 条已被上面那条占掉、间隔也没到，一样放行）
+  const fresh = checkVideoComment({
+    cfg, ledger, video: { bvid: 'BV1fresh', aid: 222, title: '另一个标题' }, message: '再来一条', now: NOW, force: true,
+  });
+  assert.equal(fresh.allowed, true, JSON.stringify(fresh.reasons));
+
+  // 真想放开就显式写 `policy.dedupePerVideo: false`
+  const loose = checkVideoComment({
+    cfg: cfgWith({ postVideoComment: 'auto', dailyVideoComments: 1, dedupePerVideo: false }), ledger,
+    video: { bvid: 'BV1ownerfree', aid: 111, title: '随便一个标题' }, message: '再来一条', now: NOW, force: true,
+  });
+  assert.equal(loose.allowed, true, JSON.stringify(loose.reasons));
 });
 check('force 也拦不住的：屏蔽词 / 总开关 off / 草稿档仍要点头', () => {
   const cfg = cfgWith({ postVideoComment: 'auto' });

@@ -14,9 +14,17 @@
  * 用法：node test/dmcmd.test.mjs
  */
 import { strict as assert } from 'node:assert';
+import { mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { dmCommandHelp, parseDmCommand, runDmCommand, runDmIntent } from '../lib/dmcmd.js';
 import { looksLikeActionRequest, parseIntent } from '../lib/intent.js';
-import { emptyLedger, recordWatched, selfWatchedToday } from '../lib/ledger.js';
+import { emptyLedger, recordWatched, selfWatchedToday, seenVideo, seenVideoSet } from '../lib/ledger.js';
+
+// 临时 DSH_HOME：`/刷` 那条链会 `appendLog('actions.log')`，用真家目录会把假记录灌进真日志。
+const HOME = join(tmpdir(), `dsh-dmcmd-test-${Date.now()}`);
+process.env.DSH_HOME = HOME;
+mkdirSync(join(HOME, 'bilibili-whale', 'logs'), { recursive: true });
 
 const OWNER_A = 3494364865103885; // 懒寻真
 const OWNER_B = 391581639; // 金易木木元
@@ -423,6 +431,43 @@ const SEARCH_HITS = [
   assert.equal(outNamed.ok, true, '主人点名的片子不受她自己额度限制');
   assert.equal(ledCap.watched.at(-1).source, 'master', '主人点名的要标 master');
   assert.equal(selfWatchedToday(ledCap).length, 2, '额度只数自己刷的：master 那条不算');
+
+  // 9.4 刷过的视频不再重复挑（主人 2026-10-05：「她现在开始重复刷刷过的视频了」）
+  // 真机：`BV1cz421i7k8` 被评论了 4 遍、`BV1Fd4y1J7w5` 2 遍，因为 `search` 的排序是固定的，
+  // 每轮都按播放量取回同一条；现在选片先减掉账本里见过的（watched/study/comments/favorites）。
+  const seenLed = emptyLedger();
+  const seenCfg = { ...CFG, policy: { ...CFG.policy, postTriple: 'off' }, learning: { enabled: true, dailyWatch: 10 } };
+  const round1 = fakeClient({ searchResult: SEARCH_HITS });
+  const outRound1 = await runDmIntent({ cfg: seenCfg, ledger: seenLed, client: round1.client, mid: OWNER_A, uname: '懒寻真', text: '你自己去找点视频看看' });
+  assert.equal(outRound1.ok, true, `第一轮该刷得动（实际：${outRound1.text}）`);
+  const picked1 = seenLed.watched.at(-1).bvid;
+  assert.equal(picked1, 'BV1BZtC68EXq', `第一轮按播放量挑最高的（实际：${picked1}）`);
+
+  const round2 = fakeClient({ searchResult: SEARCH_HITS });
+  const outRound2 = await runDmIntent({ cfg: seenCfg, ledger: seenLed, client: round2.client, mid: OWNER_A, uname: '懒寻真', text: '你自己去找点视频看看' });
+  assert.equal(outRound2.ok, true, `第二轮该换一支（实际：${outRound2.text}）`);
+  const picked2 = seenLed.watched.at(-1).bvid;
+  assert.notEqual(picked2, picked1, `刷过的不许再挑（第一轮 ${picked1}、第二轮 ${picked2}）`);
+
+  // 全刷过之后：如实说「都刷过了」，而不是回头再挑一遍
+  const allSeen = seenLed.watched.slice();
+  for (const hit of SEARCH_HITS) {
+    if (allSeen.some((row) => row.bvid === hit.bvid) !== true) recordWatched(seenLed, { bvid: hit.bvid, source: 'self' });
+  }
+  const round3 = fakeClient({ searchResult: SEARCH_HITS });
+  const outRound3 = await runDmIntent({ cfg: seenCfg, ledger: seenLed, client: round3.client, mid: OWNER_A, uname: '懒寻真', text: '你自己去找点视频看看' });
+  assert.equal(outRound3.ok, true, '全刷过也是正常回执，不是报错');
+  assert.ok(outRound3.text.includes('刷过'), `要说清是「都刷过了」（实际：${outRound3.text}）`);
+  assert.equal(round3.calls.filter((c) => c.path === 'video').length, 0, '都刷过就别再拉详情/评论，省得又评一遍');
+
+  // 账本侧的「见过」清单：watched / study / comments / favorites 都算
+  const seenHelper = emptyLedger();
+  recordWatched(seenHelper, { bvid: 'BVseen1', source: 'self' });
+  seenHelper.comments.push({ bvid: 'BVseen2' });
+  assert.equal(seenVideo(seenHelper, 'BVseen1'), true);
+  assert.equal(seenVideo(seenHelper, 'BVseen2'), true);
+  assert.equal(seenVideo(seenHelper, 'BVnotseen'), false);
+  assert.ok(seenVideoSet(seenHelper).has('BVseen1') && seenVideoSet(seenHelper).has('BVseen2'));
 }
 
 // ── 10. 第十轮：主人说「去发学习动态」就真发（2026-10-05 真机事故）────────────

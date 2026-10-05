@@ -239,7 +239,10 @@ async function patrolComments(run, { cfg, pending }) {
     for (const item of items) {
       const title = String(item.title ?? '');
       if (title === '' || exclude.some((word) => title.includes(word))) continue;
-      if (commentedVideo(ledger, item.bvid) === true) {
+      // `commentedVideo` 返回的是账本里那一条（没有就是 null），不是布尔值 ——
+      // 这里原来写 `=== true`，永远不成立，「评过的就别再评」这句其实是死代码
+      // （2026-10-05 主人抱怨「重复刷刷过的视频」时翻出来的）。
+      if (commentedVideo(ledger, item.bvid) !== null) {
         seen += 1;
         continue;
       }

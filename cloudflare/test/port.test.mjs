@@ -479,6 +479,17 @@ check('同一视频重复评论被去重拦下', () => {
   assert.ok(verdict.reasons.some((r) => r.includes('已经评论过了')), `reasons=${JSON.stringify(verdict.reasons)}`);
   const other = checkVideoComment({ cfg, ledger: l, bvid: 'BVother', message: '换个视频', now: farFuture() });
   assert.equal(other.allowed, true, `reasons=${JSON.stringify(other.reasons)}`);
+
+  // 2026-10-05 主人「她现在开始重复刷刷过的视频了」以后：这道闸不吃 force，硬拦同一支片子；
+  // 真要放开得显式写 `policy.dedupePerVideo: false`（跟本机 `lib/policy.js` 一个契约）。
+  const forced = checkVideoComment({ cfg, ledger: l, bvid: 'BV1xx411c7mD', message: '主人再评一条', now: farFuture(), force: true });
+  assert.equal(forced.allowed, false, '评过的视频，force 也不该放行');
+  assert.ok(forced.reasons.some((r) => r.includes('已经评论过了')), `reasons=${JSON.stringify(forced.reasons)}`);
+  const loose = cloneDefaults();
+  loose.policy.postVideoComment = 'auto';
+  loose.policy.dedupePerVideo = false;
+  const loosened = checkVideoComment({ cfg: loose, ledger: l, bvid: 'BV1xx411c7mD', message: '主人再评一条', now: farFuture(), force: true });
+  assert.equal(loosened.allowed, true, `dedupePerVideo: false 才放行（reasons=${JSON.stringify(loosened.reasons)}）`);
 });
 
 check('主人回复豁免每人一条 / 24 小时窗口（并给出提醒）', () => {
