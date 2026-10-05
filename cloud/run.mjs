@@ -196,6 +196,26 @@ async function patrolComments(run, { cfg, pending }) {
       }
       // 一轮只挑一个视频，避免待确认箱被塞满。
       const video = await run('bili_video', { id: item.bvid, comments: 8 });
+
+      // 刷过的视频进 B 站浏览记录；够「好内容」就随手三连并分类收藏（主人要求）。
+      // 走 bili_triple 工具：策略、账本、落盘都由它管，三连是 confirm 模式时它只回判断。
+      try {
+        const { scoreVideo } = await import('../lib/study.js');
+        const scored = scoreVideo(video, { topic: '', cfg, ledger });
+        const acted = await run('bili_triple', { id: item.bvid, topic: '', score: scored });
+        const short = title.slice(0, 24);
+        if (acted?.history?.reported === true) summary.push(`《${short}》记进浏览记录了`);
+        if (acted?.triple?.done === true) {
+          summary.push(`三连《${short}》：点赞 + ${acted.triple.coin ?? 0} 币 + 收藏进「${acted.triple.folder?.title ?? ''}」`);
+        } else if (acted?.triple?.needsConfirm === true) {
+          summary.push(`《${short}》够好内容，但三连是 confirm 模式，没连`);
+        } else if ((acted?.triple?.reasons ?? []).length > 0) {
+          summary.push(`《${short}》没三连：${(acted.triple.reasons ?? []).join('；').slice(0, 60)}`);
+        }
+      } catch (issue) {
+        summary.push(`三连/浏览记录失败：${String(issue?.message ?? issue).slice(0, 80)}`);
+      }
+
       const message = await composeVideoComment({ cfg, video, topComments: video?.hotComments ?? [] });
       if (message === null) {
         summary.push(`《${title.slice(0, 24)}》脑子没写出话来，跳过`);

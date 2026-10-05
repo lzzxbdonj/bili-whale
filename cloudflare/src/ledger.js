@@ -200,9 +200,9 @@ export const recordVideoComment = recordComment;
  * 记录一次收藏（刷到好看的视频就收进收藏夹）。`aid` 是去重键。
  * 与 lib/ledger.js:200-207 逐行等价。
  */
-export function recordFavorite(ledger, { aid, bvid = '', title = '', upName = '', folderId = null, ts = Date.now(), now = new Date() }) {
+export function recordFavorite(ledger, { aid, bvid = '', title = '', upName = '', folderId = null, triple = false, like = false, coin = 0, ts = Date.now(), now = new Date() }) {
   if (!Array.isArray(ledger.favorites)) ledger.favorites = [];
-  ledger.favorites.push({ aid: Number(aid), bvid, title, upName, folderId, date: dateKey(now), ts });
+  ledger.favorites.push({ aid: Number(aid), bvid, title, upName, folderId, triple: triple === true, like: like === true, coin: Number(coin) || 0, date: dateKey(now), ts });
   ledger.favorites = ledger.favorites.slice(-500);
   ledger.lastActionTs = ts;
   if (ledger.daily?.[dateKey(now)] !== undefined) ledger.daily[dateKey(now)].favorites = (ledger.daily[dateKey(now)].favorites ?? 0) + 1;
@@ -213,4 +213,16 @@ export function recordFavorite(ledger, { aid, bvid = '', title = '', upName = ''
 export function favoritedAlready(ledger, aid) {
   const key = Number(aid);
   return (ledger.favorites ?? []).some((item) => Number(item.aid) === key);
+}
+
+/** 这个视频是不是已经「三连」过了（收藏记录里带 triple 标记）。 */
+export function tripledAlready(ledger, aid) {
+  const key = Number(aid);
+  return (ledger.favorites ?? []).some((item) => Number(item.aid) === key && item.triple === true);
+}
+
+/** 今天三连了几个（按收藏记录里的 triple 标记数）。 */
+export function tripleCountToday(ledger, now = new Date()) {
+  const key = dateKey(now);
+  return (ledger.favorites ?? []).filter((item) => item.triple === true && (item.date ?? dateKey(new Date(Number(item.ts) || Date.now()))) === key).length;
 }

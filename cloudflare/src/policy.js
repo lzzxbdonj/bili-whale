@@ -16,7 +16,7 @@
  *
  * @module dsh-bilibili-whale/cloudflare/policy
  */
-import { commentedVideo, dynamicPostedToday, lastReplyTsForUser, threadReplyCount, todayCounts } from './ledger.js';
+import { commentedVideo, dynamicPostedToday, lastReplyTsForUser, threadReplyCount, todayCounts, tripledAlready, tripleCountToday } from './ledger.js';
 
 /** 默认配置（从 lib/config.js 原样搬过来；Worker 版不移植其中的文件路径/读写部分）。 */
 export const DEFAULTS = {
@@ -39,6 +39,12 @@ export const DEFAULTS = {
     postDynamic: 'auto',
     /** 收藏视频：auto 看到喜欢的直接收 / confirm 先出草稿 / off 禁止。 */
     postFavorite: 'auto',
+    /** 「好内容随手三连」（点赞+投币+收藏）：auto 直接连 / confirm 先出草稿 / off 禁止。 */
+    postTriple: 'confirm',
+    /** 分数门槛：学习打分（scoreVideo）到这个分才算「好内容」，才值得三连。 */
+    tripleMinScore: 6,
+    /** 三连时投几枚币（1 或 2）。 */
+    tripleCoin: 1,
     /** 主人永远优先，不受「每人一条」限制。 */
     ownerUnlimited: true,
     /** 普通人：每人在同一评论串最多回几条。 */
@@ -51,6 +57,10 @@ export const DEFAULTS = {
     dailyDynamics: 1,
     /** 每天最多收藏几个「刷到觉得好看」的视频。 */
     dailyFavorites: 5,
+    /** 每天最多三连几个。 */
+    dailyTriples: 5,
+    /** 刷过的视频报进 B 站浏览记录（历史记录里能看到她刷过什么）。 */
+    reportHistory: true,
     /** 两次对外动作之间的最小间隔（秒）。 */
     minIntervalSeconds: 120,
     /** 回复主人时的最小间隔（秒）——主人优先，允许更勤快。 */
@@ -215,6 +225,10 @@ export const DEFAULTS = {
     topicsOnly: false,
     /** 自定义话题词；留空用 policy 里的默认表。 */
     topicKeywords: [],
+    /** 三连时默认放进哪个收藏夹（「分类」的兜底夹）。 */
+    favoriteFolder: '小鲸鱼娘的学习收藏',
+    /** 按方向分类收藏夹：{ 'AI 智能体': 'AI 学习', 'DeepSeek': 'AI 学习' }。 */
+    folderByTopic: {},
     /** 首页推荐单次拉取条数。 */
     ps: 12,
   },
@@ -268,7 +282,10 @@ export const DEFAULT_TOPIC_KEYWORDS = [
 
 /** 标题/标签命中黑名单？返回命中的那个词，没命中返回 null。 */
 export function titleBlocked(cfg, title, tags = []) {
-  const list = Array.isArray(cfg?.feed?.titleBlock) ? cfg.feed.titleBlock : DEFAULT_TITLE_BLOCK;
+  // 空数组 = 没自己写词表 → 用默认黑名单（见 lib/policy.js 同一处注释）。
+  const list = Array.isArray(cfg?.feed?.titleBlock) && cfg.feed.titleBlock.length > 0
+    ? cfg.feed.titleBlock
+    : DEFAULT_TITLE_BLOCK;
   const blob = `${String(title ?? '')} ${Array.isArray(tags) ? tags.join(' ') : ''}`;
   return hitBlocked(blob, list);
 }
@@ -447,6 +464,73 @@ export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toNa
     message: text,
     hint: needsConfirm ? '这是草稿模式：先给主人看，主人点头后再用 confirm=true 重调。' : '',
   };
+}
+
+/**
+ * 「好内容随手三连」的策略判断：点赞 + 投币 + 收藏（收藏进分类夹）一起做。
+ *
+ * 主人要求（2026-10-05）：「刷视频记得好的内容随手三连并分类」。
+ * 但「好」要有客观门槛，否则等于把她的三连随手撒出去：
+ *   - 分数门槛 `policy.tripleMinScore`（沿用学习打分 scoreVideo 的分数）；
+ *   - 同一个视频只三连一次（账本 favorites 里的 triple 标记去重）；
+ *   - 每天最多 `policy.dailyTriples` 个；
+ *   - 标题命中黑名单不三连（不给擦边垃圾捧场）。
+ */
+export function checkTriple({ cfg, ledger, video, score = 0, confirm = false, now = Date.now() }) {
+  const mode = cfg?.policy?.postTriple ?? 'confirm';
+  const aid = Number(video?.aid ?? 0);
+  const title = String(video?.title ?? '');
+  const minScore = Number(cfg?.policy?.tripleMinScore ?? 6);
+  const reasons = [];
+  if (mode === 'off') reasons.push('配置里 postTriple = off，禁止三连');
+  if (aid <= 0) reasons.push('没有拿到视频 aid，没法三连');
+  if (Number(score) < minScore) reasons.push(`这个视频分数 ${Number(score)} 不到 ${minScore}，够不上「好内容」`);
+  if (title.trim() !== '') {
+    const blocked = titleBlocked(cfg, title, video?.tags ?? []);
+    if (blocked !== null) reasons.push(`标题命中黑名单「${blocked}」，不三连`);
+  }
+  if (aid > 0 && tripledAlready(ledger, aid)) reasons.push(`这个视频（aid=${aid}）已经三连过了`);
+  const limit = Number(cfg?.policy?.dailyTriples ?? 5);
+  if (limit > 0 && tripleCountToday(ledger, new Date(now)) >= limit) reasons.push(`今日三连已达上限 ${limit} 个`);
+  const needsConfirm = mode === 'confirm' && confirm !== true;
+  return {
+    allowed: reasons.length === 0 && !needsConfirm,
+    needsConfirm,
+    mode,
+    owner: true,
+    reasons,
+    actions: {
+      like: true,
+      coin: Math.min(Math.max(Number(cfg?.policy?.tripleCoin ?? 1), 1), 2),
+      favorite: true,
+      folder: pickFolderTitle(cfg, { topic: video?.topic ?? '', title }),
+    },
+    hint: needsConfirm ? '三连先给主人看一眼，点头后再连（confirm=true）。' : '',
+  };
+}
+
+/** 三连时默认往哪个收藏夹放（主人没配就用这个）。 */
+export const DEFAULT_FAVORITE_FOLDER = '小鲸鱼娘的学习收藏';
+
+/**
+ * 这个视频该进哪个收藏夹（「分类」就靠它）。
+ *
+ * 先看方向映射 `feed.folderByTopic`（键是学习方向，值是收藏夹名），
+ * 键直接出现在标题里也算；都没有就回落到 `feed.favoriteFolder`。
+ */
+export function pickFolderTitle(cfg, { topic = '', title = '' } = {}) {
+  const map = cfg?.feed?.folderByTopic ?? {};
+  const key = String(topic ?? '').trim();
+  const exact = map[key];
+  if (typeof exact === 'string' && exact.trim() !== '') return exact.trim();
+  const text = String(title ?? '');
+  for (const [word, folder] of Object.entries(map)) {
+    if (String(word).trim() !== '' && text.includes(String(word)) && typeof folder === 'string' && folder.trim() !== '') {
+      return folder.trim();
+    }
+  }
+  const fallback = String(cfg?.feed?.favoriteFolder ?? '').trim();
+  return fallback === '' ? DEFAULT_FAVORITE_FOLDER : fallback;
 }
 
 /**

@@ -150,6 +150,10 @@ assert.doesNotMatch(
 {
   const junk = titleBlocked({}, '女大学生的"隐秘的圈子"一月疯狂约600人一晚赚上万');
   assert.ok(junk !== null, `擦边标题必须命中黑名单（实际：${junk}）`);
+  assert.ok(
+    titleBlocked({ feed: { titleBlock: [] } }, '女大学生的"隐秘的圈子"一月疯狂约600人一晚赚上万') !== null,
+    'feed.titleBlock 为空数组时必须回落到默认黑名单（空数组 ≠ 清空黑名单）',
+  );
   assert.equal(titleBlocked({}, '【相对论】为什么光速不变？'), null, '正常科普不该被拦');
   assert.equal(titleOnTopic({}, '随便什么标题'), true, 'topicsOnly 默认关：不按话题过滤');
   assert.equal(titleOnTopic({ feed: { topicsOnly: true } }, '随便什么标题'), false, 'topicsOnly 打开时要按话题过滤');

@@ -31,7 +31,7 @@ assert.deepEqual(
 
 apply(ctx, {});
 
-const expected = ['bili_login', 'bili_status', 'bili_config', 'bili_feed', 'bili_video', 'bili_comments', 'bili_comment', 'bili_reply', 'bili_inbox', 'bili_dynamic', 'bili_ledger', 'bili_follow', 'bili_dm', 'bili_favorite', 'bili_study', 'bili_cloud'];
+const expected = ['bili_login', 'bili_status', 'bili_config', 'bili_feed', 'bili_video', 'bili_comments', 'bili_comment', 'bili_reply', 'bili_inbox', 'bili_dynamic', 'bili_ledger', 'bili_follow', 'bili_dm', 'bili_favorite', 'bili_triple', 'bili_study', 'bili_cloud'];
 const names = registered.map((tool) => tool.name);
 for (const want of expected) assert.ok(names.includes(want), `缺少工具 ${want}`);
 assert.equal(new Set(names).size, names.length, '工具名不能重复');
