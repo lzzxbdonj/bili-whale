@@ -29,7 +29,7 @@ const CFG = {
 };
 
 /** 假 BiliClient：只记下调用。 */
-function fakeClient({ searchResult = null, failSearch = '' } = {}) {
+function fakeClient({ searchResult = null, failSearch = '', failVideo = '', hotCount = 3 } = {}) {
   const calls = [];
   return {
     calls,
@@ -43,6 +43,23 @@ function fakeClient({ searchResult = null, failSearch = '' } = {}) {
         calls.push({ path: 'sendMsg', receiverId, content });
         return { msgKey: 'MK-1' };
       },
+      video: async (id) => {
+        calls.push({ path: 'video', id });
+        if (failVideo !== '') throw new Error(failVideo);
+        return { bvid: String(id), aid: 460754856, cid: 345175659, title: '拉康最著名的理论：镜像阶段', author: '潜在狗子', view: 133000, duration: '7:13', durationSec: 433 };
+      },
+      comments: async (id) => {
+        calls.push({ path: 'comments', id });
+        return { replies: Array.from({ length: hotCount }, (_, i) => ({ rpid: i, message: 'x' })) };
+      },
+      historyReport: async (options) => {
+        calls.push({ path: 'historyReport', ...options });
+        return { aid: options.aid, cid: options.cid, progress: options.progress };
+      },
+      videoLike: async () => { calls.push({ path: 'videoLike' }); return {}; },
+      videoCoin: async () => { calls.push({ path: 'videoCoin' }); return {}; },
+      favFolders: async () => { calls.push({ path: 'favFolders' }); return [{ id: 7, title: '小鲸鱼娘的学习收藏' }]; },
+      favDeal: async () => { calls.push({ path: 'favDeal' }); return {}; },
     },
   };
 }
@@ -179,4 +196,52 @@ const SEARCH_HITS = [
   assert.ok(solo.text.includes('不知道该转给谁'));
 }
 
-console.log('✓ 私信命令测试通过：认命令、命令表、/搜 真搜并压字数、/转达 真发并过闸门、不认识就不猜');
+// ── 6. /刷：主人指定刷什么，她就真去刷什么 ────────────────────────────────────
+//
+// 主人 2026-10-05：「给她自己自动刷视频的权限，每一天都要有浏览记录，遇到觉得有意思的
+// 视频就三连，还有我们让她刷什么视频她就要刷什么」。
+{
+  const WATCH_CFG = {
+    ...CFG,
+    policy: { ...CFG.policy, postTriple: 'auto', tripleMinScore: 6, dailyTriples: 10, tripleCoin: 1, reportHistory: true, minIntervalSeconds: 0, minIntervalSecondsOwner: 0 },
+  };
+
+  // 给 BV 号：真拉详情 → 真报浏览记录 → 真三连。
+  const ledger = emptyLedger();
+  const { client, calls } = fakeClient();
+  const out = await runDmCommand({ cfg: WATCH_CFG, ledger, client, mid: OWNER_A, uname: '懒寻真', command: parseDmCommand('/刷 BV1M5411g7He') });
+  assert.equal(out.ok, true);
+  assert.ok(calls.some((c) => c.path === 'video' && c.id === 'BV1M5411g7He'), '要真去拉详情');
+  const hist = calls.find((c) => c.path === 'historyReport');
+  assert.ok(hist !== undefined, '要真报 B 站浏览记录');
+  assert.equal(hist.cid, 345175659, 'cid 必须带上，不然报不进历史');
+  assert.ok(calls.some((c) => c.path === 'videoLike'), '觉得有意思要三连（点赞）');
+  assert.ok(calls.some((c) => c.path === 'favDeal'), '三连要收藏');
+  assert.equal(ledger.watched.length, 1, '要留下本机痕迹');
+  assert.equal(ledger.watched[0].source, 'master', '痕迹要标出来是主人点的');
+  assert.equal(ledger.watched[0].reported, true);
+  assert.ok(out.text.includes('刷了 1 个'), `回执要说刷了几个（实际：${out.text}）`);
+  assert.ok(out.text.includes('进历史✓'), '回执要说进没进历史');
+  assert.ok(out.text.includes('三连✓'), '回执要说连没连');
+  assert.ok(out.text.length <= 200, `回执不能超 200 字（实际 ${out.text.length}）`);
+
+  // 给关键词：先搜、再逐个拉详情去刷。
+  const keyed = fakeClient({ searchResult: SEARCH_HITS });
+  const led2 = emptyLedger();
+  const out2 = await runDmCommand({ cfg: WATCH_CFG, ledger: led2, client: keyed.client, mid: OWNER_A, command: parseDmCommand('/刷 拉康 2') });
+  assert.equal(out2.ok, true);
+  assert.equal(keyed.calls.filter((c) => c.path === 'search').length, 1, '关键词只搜一次');
+  assert.equal(keyed.calls.filter((c) => c.path === 'video').length, 2, '个数说 2 就拉 2 条详情');
+  assert.equal(led2.watched.length, 2, '两条都要留痕');
+
+  // 缺参数 / 拉不到：如实说，别假装刷了。
+  const bare = await runDmCommand({ cfg: WATCH_CFG, ledger: emptyLedger(), client: fakeClient().client, mid: OWNER_A, command: parseDmCommand('/刷') });
+  assert.equal(bare.ok, false);
+  assert.ok(bare.text.includes('/刷'), '没给参数要教怎么写');
+
+  const boom = await runDmCommand({ cfg: WATCH_CFG, ledger: emptyLedger(), client: fakeClient({ failVideo: 'B站接口返回 -412：请求被拦截' }).client, mid: OWNER_A, command: parseDmCommand('/刷 BV1M5411g7He') });
+  assert.equal(boom.ok, false, '刷失败不能算办成');
+  assert.ok(boom.text.includes('-412'), '失败原因要带回来');
+}
+
+console.log('✓ 私信命令测试通过：认命令、命令表、/搜 真搜并压字数、/刷 真刷+留痕+三连、/转达 真发并过闸门、不认识就不猜');

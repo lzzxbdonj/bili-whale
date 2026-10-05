@@ -70,6 +70,47 @@ export async function aiText(env, { model, system, user, maxTokens = 220, temper
   }
 }
 
+/**
+ * 调 **DeepSeek（付费）** 取一段文本；没配 key 或任何异常都返回 null（调用方负责回退）。
+ *
+ * 主人 2026-10-05：「回复主人的时候用付费模型」。本机 `lib/brain.js` 是直接打
+ * `api.deepseek.com` 的；云端这边原来只有 Workers AI（免费），所以「云端的她」回主人
+ * 时质量跟本机不是一条线。这里补上，key 走 Worker secret `DEEPSEEK_API_KEY`。
+ *
+ * 注意：**只给「回主人」用**。陌生人和视频文案继续走免费 Workers AI
+ * （`prefer` 那套口径与本机 `lib/compose.js` 一致）。
+ */
+export async function deepseekText(env, { system, user, maxTokens = 220, temperature = 1.3, model = 'deepseek-chat', timeoutMs = 25000 } = {}) {
+  const key = String(env?.DEEPSEEK_API_KEY ?? '').trim();
+  if (key === '') return null;
+  try {
+    const response = await withTimeout(
+      fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model,
+          // 孤立代理项会让严格解析器 400：`unexpected end of hex escape`（2026-10-05 真机事故）。
+          messages: [
+            { role: 'system', content: safeForModel(system ?? PERSONA_SYSTEM) },
+            { role: 'user', content: safeForModel(user ?? '') },
+          ],
+          max_tokens: maxTokens,
+          temperature,
+          stream: false,
+        }),
+      }),
+      timeoutMs,
+    );
+    if (response?.ok !== true) return null;
+    const body = await response.json().catch(() => null);
+    const text = extractText(body);
+    return sanitize(text);
+  } catch {
+    return null;
+  }
+}
+
 /** 从 Workers AI 的各种返回形状里抠出文本（也借给 /brain 接口用）。 */
 export function extractText(result) {
   if (result === null || result === undefined) return '';
@@ -143,20 +184,24 @@ export async function draftReply(env, cfg, { target, selfText = '', theirText = 
     .slice(0, 5)
     .map((line) => `- ${clipText(String(line).replace(/\s+/g, ' '), 50)}`)
     .join('\n');
-  const text = await aiText(env, {
-    model: cfg?.personaModel,
-    user: [
-      `对方（${name}${isOwner ? '，是你的主人，要格外亲昵、优先照顾，可以直接接话' : '，是客人，客气可爱、一人一条不纠缠'}）在 B 站的评论是：`,
-      `「${their}」`,
-      brief === '' ? '' : `\n${brief}`,
-      self === '' ? '' : `\n你自己先说的那条：${self}`,
-      threadText === '' ? '' : `\n楼上这一串（时间正序）：\n${threadText}`,
-      recent === '' ? '' : `\n你最近已经回过别人的话（别重复这些、别用同一个句式）：\n${recent}`,
-      isOwner
-        ? '\n请写一条回复（15～60 字，按铁律来，只输出回复正文）。'
-        : '\n请写一条回复（15～60 字，按铁律来，只输出回复正文）。不要透露主人的任何信息（昵称、UID、私信内容），不要承诺帮对方做事、不要交换联系方式。',
-    ].filter((line) => line !== '').join('\n'),
-  });
+  const prompt = [
+    `对方（${name}${isOwner ? '，是你的主人，要格外亲昵、优先照顾，可以直接接话' : '，是客人，客气可爱、一人一条不纠缠'}）在 B 站的评论是：`,
+    `「${their}」`,
+    brief === '' ? '' : `\n${brief}`,
+    self === '' ? '' : `\n你自己先说的那条：${self}`,
+    threadText === '' ? '' : `\n楼上这一串（时间正序）：\n${threadText}`,
+    recent === '' ? '' : `\n你最近已经回过别人的话（别重复这些、别用同一个句式）：\n${recent}`,
+    isOwner
+      ? '\n请写一条回复（15～60 字，按铁律来，只输出回复正文）。'
+      : '\n请写一条回复（15～60 字，按铁律来，只输出回复正文）。不要透露主人的任何信息（昵称、UID、私信内容），不要承诺帮对方做事、不要交换联系方式。',
+  ].filter((line) => line !== '').join('\n');
+  // 回主人先试**付费**脑子（主人 2026-10-05 的要求，与本机 `lib/compose.js` 同口径）；
+  // 没配 `DEEPSEEK_API_KEY`、超时、报错、空回复都静默回落到免费的 Workers AI。
+  // 陌生人不喂 key —— 继续走免费额度。
+  const paid = isOwner === true
+    ? await deepseekText(env, { system: PERSONA_SYSTEM, user: prompt, maxTokens: 220, temperature: 1.3 })
+    : null;
+  const text = paid !== null && paid !== '' ? paid : await aiText(env, { model: cfg?.personaModel, user: prompt });
   const final = text !== null && text.length > 0 ? text : fallbackReply(target);
   return sanitize(final, { maxChars: Math.min(Number(cfg?.maxCommentChars) || 200, 200) });
 }

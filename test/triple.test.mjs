@@ -13,14 +13,30 @@ import { strict as assert } from 'node:assert';
 import { BiliClient } from '../lib/api.js';
 import { checkTriple, pickFolderTitle, DEFAULT_FAVORITE_FOLDER } from '../lib/policy.js';
 import { tripleVideo, reportHistory, tripleConfig } from '../lib/triple.js';
-import { emptyLedger, recordFavorite, recentWatched, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
+import { emptyLedger, recordFavorite, recentWatched, recordWatched, todayWatched, tripledAlready, tripleCountToday } from '../lib/ledger.js';
+import { ensureDailyWatch } from '../lib/study.js';
 
 const VIDEO = { aid: 936177870, bvid: 'BV16T4y1k7dB', title: '如何炼成超强学习能力？', author: '硬核学长', cid: 123456, durationSec: 600 };
 
 /** 一个假客户端：记下每次调用，按需返回收藏夹列表。 */
-function fakeClient({ folders = [], fail = {} } = {}) {
+function fakeClient({ folders = [], fail = {}, popularResult = null } = {}) {
   const calls = [];
   const client = Object.create(BiliClient.prototype);
+  client.popular = async (ps) => {
+    calls.push({ path: 'popular', ps });
+    if (fail.popular) throw new Error(fail.popular);
+    return popularResult ?? [];
+  };
+  client.rcmd = async (ps) => {
+    calls.push({ path: 'rcmd', ps });
+    if (fail.rcmd) throw new Error(fail.rcmd);
+    return popularResult ?? [];
+  };
+  client.ranking = async () => {
+    calls.push({ path: 'ranking' });
+    if (fail.ranking) throw new Error(fail.ranking);
+    return popularResult ?? [];
+  };
   client.favFolders = async () => {
     calls.push({ path: 'favFolders' });
     return folders;
@@ -233,4 +249,42 @@ function fakeClient({ folders = [], fail = {} } = {}) {
   assert.equal(proto.normalizeVideo({ bvid: 'BV1zz', aid: 3, title: 't' }).cid, 0, '真没有 cid 就给 0（不硬编）');
 }
 
-console.log('✓ 三连测试通过：分数/每日上限/去重门槛、收藏夹分类、逐步容错、浏览记录契约、刷视频留痕');
+// ⑨ 每天必有浏览记录（主人 2026-10-05：「每一天都要有浏览记录」）。
+//
+// `learnOnce` 只在**挑到合适视频**时才顺便报历史 —— 挑不到就一整天没有痕迹，
+// 主人一翻 B 站历史就以为她在摸鱼。`ensureDailyWatch` 就是这道兜底。
+{
+  // 今天已经有痕迹 → 什么都不动，别白打接口。
+  const led = emptyLedger();
+  recordWatched(led, { bvid: 'BV1already', aid: 1, title: '已经刷过', cid: 9, reported: true });
+  const skip = await ensureDailyWatch({ client: fakeClient().client, cfg: {}, ledger: led });
+  assert.equal(skip.ok, true);
+  assert.equal(skip.already, 1);
+
+  // 今天一条都没有 → 从热门里挑**带 cid** 的那条补上（没 cid 报不进历史）。
+  const blank = emptyLedger();
+  const fed = fakeClient({
+    popularResult: [
+      { bvid: 'BV1noCid', aid: 1, title: '没 cid 的' },
+      { bvid: 'BV1withCid', aid: 2, cid: 777, title: '有 cid 的', durationSec: 100 },
+    ],
+  });
+  const made = await ensureDailyWatch({ client: fed.client, cfg: {}, ledger: blank });
+  assert.equal(made.ok, true);
+  assert.equal(made.bvid, 'BV1withCid', '要挑带 cid 的那条');
+  assert.equal(blank.watched.length, 1, '要留下本机痕迹');
+  assert.equal(blank.watched[0].reported, true);
+  assert.ok(fed.calls.some((c) => c.path === 'historyReport'), '要真报 B 站浏览记录');
+
+  // 三个源都挂了 → 如实回报，不假装刷过。
+  const dead = await ensureDailyWatch({ client: fakeClient({ fail: { popular: 'boom', rcmd: 'boom', ranking: 'boom' } }).client, cfg: {}, ledger: emptyLedger() });
+  assert.equal(dead.ok, false);
+  assert.ok(dead.reason.includes('没拿到'), `失败要说明原因（实际：${dead.reason}）`);
+
+  // 主人关掉 reportHistory → 不硬报。
+  const off = await ensureDailyWatch({ client: fakeClient().client, cfg: { policy: { reportHistory: false } }, ledger: emptyLedger() });
+  assert.equal(off.ok, false);
+  assert.ok(off.reason.includes('reportHistory'));
+}
+
+console.log('✓ 三连测试通过：分数/每日上限/去重门槛、收藏夹分类、逐步容错、浏览记录契约、刷视频留痕、每天必有记录');

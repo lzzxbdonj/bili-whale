@@ -71,8 +71,8 @@ export const DEFAULTS = {
     dailyDynamics: 1,
     /** 每天最多收藏几个「刷到觉得好看」的视频。 */
     dailyFavorites: 5,
-    /** 每天最多三连几个。 */
-    dailyTriples: 5,
+    /** 每天最多三连几个（主人 2026-10-05：「遇到觉得有意思的视频就三连」）。 */
+    dailyTriples: 10,
     /** 刷过的视频报进 B 站浏览记录（历史记录里能看到她刷过什么）。 */
     reportHistory: true,
     /**

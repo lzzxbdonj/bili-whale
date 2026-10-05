@@ -35,6 +35,8 @@ const value = (name, fallback = '') => {
 
 const TASK = value('task', 'patrol');
 const DRY = flag('dry');
+/** `--always`：就算本机在岗也照跑（排查用；默认让位给本机）。 */
+const ALWAYS = flag('always');
 const WHALE_URL = String(process.env.WHALE_URL ?? '').replace(/\/+$/, '');
 const WHALE_TOKEN = String(process.env.WHALE_TOKEN ?? '');
 
@@ -297,6 +299,21 @@ async function main() {
   say(`== 小鲸鱼娘云端巡检：${TASK} @ ${new Date().toISOString()}`);
   const state = await pullState();
   say(`状态拉取完成：cookie ${Object.keys(state.cookies).length} 项 · 账本草稿 ${state.pending.length} 条`);
+
+  // 本机在岗就让位。
+  //
+  // 主人 2026-10-05 问：「为什么我 AI 的 IP 一会在美国一会在浙江？」
+  // 答案就在这条链路：GitHub Actions 的 runner 跑在 Azure（出口**美国**），本机是**浙江**家宽。
+  // 云端如果在本机开着的时候也照跑，同一个 B 站账号就会「一会儿美国一会儿浙江」地活动，
+  // 看着像被盗号 / 共享账号，纯属给风控递刀，而且 Actions 分钟数是白烧的。
+  // Cloudflare Worker 的 cron 早就有这条判断（日志里的「本机在岗…云端只待命」），这里补上同一条。
+  const LOCAL_TTL_MS = 30 * 60 * 1000;
+  const seenAt = Number(state.meta?.localSeenAt ?? 0);
+  const localFresh = seenAt > 0 && Date.now() - seenAt < LOCAL_TTL_MS;
+  if (localFresh && ALWAYS !== true) {
+    say(`本机在岗（${Math.round((Date.now() - seenAt) / 1000)} 秒前还有心跳）→ 云端让位，这轮不碰 B 站（想强制跑加 --always）`);
+    return;
+  }
 
   const { buildBiliTools } = await import('../lib/tools.js');
   const { resolveConfig } = await import('../lib/config.js');
