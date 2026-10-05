@@ -1,4 +1,4 @@
-# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第二轮：已完成**）
+# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第三轮：全绿已上线**）
 
 > 给接手的会话：这份文件是唯一权威的交接说明。仓库 **`E:\donk\dsh-bilibili-whale`**（git 分支 `master`），
 > 宿主插件装在 **`C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale`**，
@@ -10,6 +10,56 @@
 - m04637：「完善一下评论回复」。
 - 追加（同日）：**「评论不要每一条回复都带上 @」** → 后来明确为 **「刷完视频评论就 @，回复评论不用 @」**。
 - 追加（同日）：**「回复主人的时候用付费模型」**。
+
+## 1.5 第三轮新增（主人同日晚些时候交办的三件事）
+### 1.5.1 「我想让她给我转达消息一直做不到」→ 根因不是转达坏了，是她**没有手**
+- 真机证据：金易木木元 00:22:05 发 `帮我提炼一下b站有关拉康精神分析的视频`，她到 10:14 连着回了 **8 次承诺**
+  （「人家这就开跑啦」「已经跑到一半啦」「其实人家已经把清单和讲解都准备好了」），一件事没办；
+  懒寻真也催了 5 遍（「你现在总结完之后推给他吧」「现在立刻马上发过去，不然你就是在摸鱼」）。
+- **原因**：`bili_dm op=ack` 的自动回复链路（`lib/tools.js` 的 ack 分支 → `draftDmReply()` → `client.sendMsg`）
+  **只会说话，没有任何执行环节**；而 `capabilityNote()` 还写着「你现在真的会…收发私信」「主人问「能不能」时…**别说自己做不到**」，
+  于是模型对**任务请求**只能产出假承诺。`/restart` 也没人解析（全仓库搜 `startsWith('/')` 无命中）。
+- 唯一成功的一次转达（00:02:59「另一个主人让大肥鱼转告你一句：他喜欢你」）是**真有人执行** `bili_dm op=send` —— 能力一直有，只是没人按按钮。
+- **修 A**：`lib/brain.js` 的 `draftDmReply` 加三条主人侧硬规则（「你**没有手**」「绝不许说『我这就去/马上就好/已经准备好了』」「宁可认怂也别许兑不了的承诺」）；
+  `lib/tools.js` 的 `capabilityNote()` 把「别说自己做不到」改成「分清**谁在按按钮**：上面那些是托管她的程序会做的事，她自己在私信里只能说话；要搜清单/要转达/要重启得主人在电脑前点一下」。
+- **修 B（新模块 `lib/dmcmd.js` + `test/dmcmd.test.mjs`）**：主人私信里的**真命令走代码执行，绝不交给脑子**。
+  - `/搜 <关键词>` → 真去 `client.search`，回前三条（标题｜UP｜播放压成「万」｜时长｜BV号），压到 `maxCommentChars`(200) 以内；
+  - `/转达 [昵称] <正文>` → 真 `client.sendMsg` 给另一位主人（过 `checkDm` 同一道闸门 + `recordDm` 记账）；
+    开头第一个词**只有**正好是 `ownerNames` 里某位才当收件人，对不上就整串当正文（转错人比不转更糟）；
+  - `/帮助` 或光一个 `/` → 命令表；**认不出来的 `/xxx` 一律回命令表，绝不丢给脑子**。
+  - 接进 `lib/tools.js` 的 ack 分支：`owner === true && cfg.policy.dmCommands !== false` 时先解析命令；
+    回执自己也要过 `checkDmReply`，若被「刚才那次动作」的最小间隔挡住（`/转达` 刚发过一条）就等过间隔再发一次。
+  - 新开关 `policy.dmCommands: true`（`lib/config.js` 与 `cloudflare/src/policy.js` **逐字镜像**）。
+- **顺手还债**：把主人等了 10 小时的拉康清单**真发了**（`bili_dm op=reply`，主人不受每日条数限制，单条 ≤200 字）：
+  - 给金易木木元 3 条（10:56:39 / 10:56:54 / 10:57:08），抄给懒寻真 1 条（10:57:21），4 条都进了账本。
+  - 选片：BV1BZtC68EXq(8:09 镜像阶段引子) / BV1Ff4y1h7zY(59:16 有完整骨架) / BV1M5411g7He(7:13 三界) /
+    BV1Jg96BjEc9(29:46) / BV1M1t4zyEUL(53:52 有书可依) / BV1X38BzWEBn(4h19 播客)。
+
+### 1.5.2 「让它刷视频能留下痕迹」
+- 调查：`api.js:885` 的 `historyReport()`（POST `/x/v2/history/report`）**实测是通的**（报完 10:59:02 就在
+  `x/web-interface/history/cursor` 里查到）；会报历史的原本只有 `lib/study.js:197`（自主学习）和 `bili_triple`。
+- **真因**：`popular` / `ranking` / `rcmd` 的**原始条目全都自带 `cid`**，但 `api.js` 的 `normalizeVideo` **把 cid 丢掉了**，
+  于是 `reportHistory` 拿不到 cid 只能静默跳过 → `bili_feed`（刷）和 `bili_video`（看）**一条痕都不留**。
+  （`search` 的条目确实没有 cid，这类只能留本机痕。）
+- 修法：
+  1. `api.js normalizeVideo` 补 `cid: Number(item.cid ?? (item.pages ?? [])[0]?.cid ?? 0)` —— 刷列表报历史**零额外请求**；
+  2. `lib/ledger.js` 新增 `watched[]`（`MAX_WATCHED = 400`，同一天同一条只记一次）+ `recordWatched` / `todayWatched` / `recentWatched`，
+     `cloudflare/src/ledger.js` **同步镜像**（含 `snapshotLedger` 的裁剪）；
+  3. `lib/triple.js` 的 `reportHistory` 改签名 `{ client, cfg, video, ledger = null, progress = 0, topic = '', source = '' }`：
+     **报没报成都记一条 `watched`**（B 站历史只有她账号里看得到，主人要核「她今天刷了什么」得靠本机这份）；
+  4. `bili_feed` 与 `bili_video` 都加 `history` 参数（默认 `true`，`false` 可不留痕），刷/看都会报历史 + 记 `watched`；
+  5. `bili_ledger` 新增 `op=watched`：列出「今天刷到几条 / 其中几条进了 B 站浏览记录 / 最近刷到的清单」。
+- 真机验证：`bili_feed source=popular count=3` → `刷视频留痕：3 条已记进账本…其中 3 条报进了 B 站浏览记录`，
+  `bili_video` 也报成，`bili_ledger op=watched` 列得出来（BV1suam6sEtq / BV17pHB6tEtT / BV14sHj62EzS，`reported: true`）。
+
+### 1.5.3 这一轮的提交与部署
+- **`42ffed4`** `feat(watch): 刷视频留痕（cid 不再丢 + 账本 watched + bili_ledger op=watched）；feat(dm): 私信真命令 /搜 /转达`（15 文件 +645/-27）。
+- Worker：**`d1575290-4636-4eec-a8dd-f7b724ccbc2e`**（前一个是 `f9d564fb-…`）。
+- **测试：现在八套全绿** —— `test/{smoke,mention-dm,triple,reply,text,dmcmd}.mjs` + `cloudflare/test/{port,patrol.mock}.test.mjs`。
+  注意 `cloudflare/test/port.test.mjs` 里有一处**硬编码的 `createLedger()` 期望形状**，账本加字段必须同步加它。
+- 看门鲸：**pid 4640**（11:05 起）。
+- **待回已归零**（10:59 起 `reply check: 回 0 条 / 跳过 0 条 / 失败 0 条 / 待回 0`），重复刷屏也停了
+  —— 宿主在我同步 profile 时似乎**热重载**了新代码，所以本轮**不需要重启 DSH 就生效了**（重启仍然无害）。
 
 ## 2. 本轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
@@ -111,11 +161,12 @@ console.log(await runReplyCheck({}));
 日志看 `C:\Users\Administrator\.dsh\bilibili-whale\logs\{auto,brain}.log` 尾部。
 
 ## 6. 未解决 / 待主人确认
-1. 主人说过 **「把这条会话的模式调到创造模式吧」**：在 `E:\donk` 下**没找到** `.dsh/skills/learning-system`（`E:\donk\.dsh` 不存在），
-   全仓库搜「创造模式」/`creative` 也没命中 ⇒ **需要主人指路**（模式定义在哪儿？宿主设置里的开关，还是 StudyMate 技能里的 mode 字段？
-   相关目录候选：`E:\donk\study-mate`、`E:\donk\study-mate-android`、`E:\donk\.studymate-stage`、`E:\donk\studymate-deploy`）。
+1. ~~「把这条会话的模式调到创造模式吧」~~ —— **主人已自己回答「你现在就是创造模式了」（第三轮）**，那条悬案结清，不用再去翻 `E:\donk\study-mate` 之类目录。
 2. Worker 自己的巡检（`cloudflare/src/patrol.js`）里「回复主人」仍然只能用 Workers AI（免费），**没走付费模型** —— 要不要给 Worker 也配 `DEEPSEEK_API_KEY`（需要主人同意加 secret）。
 3. 更早的开放目标：**云端整套跑通**（m02160/m02757）。
+4. 私信命令只实现了 `/搜`、`/转达`、`/帮助`。主人若还想要别的（比如 `/办 <任务>` 落进待办、`/评论 <BV号>` 直接去留言），照 `lib/dmcmd.js` 的 `ALIASES` 加一条就行 —— 记住铁律：**要办事的命令必须走代码，走模型只会得到承诺**。
 
 ## 7. ⚠️ 必须提醒主人
-**宿主（DSH）要重启**才会加载新的评论回复定时器与提示词。没重启之前，本机的评论回复靠 §2.6 那只看门鲸顶着。
+- 宿主（DSH）**重启**才会加载新的评论回复定时器与提示词。不过第三轮实测：主人插件目录一同步，宿主的评论回复链路**看起来已经热重载**成新代码了（旧代码那种「每 5 分钟往同一条评论追一条」的刷屏在同步之后就停了，`待回` 也归零了）。所以重启是**保险**，不是必需。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（现在 pid 4640）顶着。
+- 想让她跑腿，直接在私信里发 `/搜 关键词` 或 `/转达 正文` —— 这是第三轮新加的、**真的会执行**的通道。
