@@ -110,27 +110,17 @@ function checkRestart() {
 }
 
 /**
- * 看门鲸自己用的配置覆盖。
+ * 看门鲸不再自带配置覆盖 —— 让它跟宿主插件读同一份用户配置（一个真相来源）。
  *
- * 主人 2026-10-05：「私信为什么还是一次发两个」「本地跟本地打架了一次发两个！」
- * 根因：本机有两个写手 —— 看门鲸（这个进程）和宿主插件（`lib/index.js` 的定时器）。
- * 可是**宿主里的模块是 DSH 启动那一刻载入的**（Node 的 ESM 缓存，进程不重启就换不掉），
- * 所以我今天加的跨进程锁 `locks/dm-round.lock`、追加日志 `replied.jsonl`、并集落盘
- * `saveLedgerMerged` 插件那一边都看不见 —— 它只会拿自己那份旧快照整份覆盖写，
- * 于是同一条私信被回两遍、同一句指令被执行两遍。
- *
- * 办法：在用户配置里把插件的私信轮 / 回复轮 / 学习轮关掉（`runDmCheck` 每轮都重新
- * `resolveConfig`，所以配置文件一改，插件下一轮就空转），看门鲸在这里显式开回来 ——
- * 只留它这一条写手。等宿主重启（插件重新载入新代码）以后，这两边都带锁，就不会再打架了。
- *
- * 回复轮为什么关 `postReply` 而不是 `replyPerRun: 0`：旧代码 `lib/reply.js:25` 是
- * `perRun: Math.max(1, …)` —— 写 0 也会被抬成 1，每轮照样回一条（真机上就这么又回了一条）。
- * `postReply: 'off'` 才会让 `runReplyCheck` 在开头直接返回。
+ * 2026-10-05 的教训（记在这里，免得下次又踩）：
+ *  - 私信一度「一次发两个」：本机有两个写手（这个进程 + 宿主插件的定时器）。宿主里的模块是
+ *    DSH 启动那一刻载入的，Node 的 ESM 缓存按进程生效 —— 当天新加的跨进程锁 `locks/dm-round.lock`、
+ *    追加日志 `replied.jsonl`、并集落盘 `saveLedgerMerged` 它都看不见，于是两边各拿旧快照覆盖写。
+ *    当时靠「用户配置里关掉插件三条线 + 这里显式开回来」先止血，根治是**重启一次 DSH 宿主**。
+ *  - 回复轮别用 `replyPerRun: 0` 来静音：旧代码 `lib/reply.js:25` 是 `Math.max(1, …)`，写 0 被抬成 1。
+ *  - 插件重载的判断：`boot.json` 的 `loadedAt`/`pid` 才会刷新（`plugin_manager` 关开插件**不会**重新 import）。
+ * 现在两边都是新代码、都带锁（`dm-round` / `study-round`），所以这里什么也不用覆盖了。
  */
-const SELF_CFG = {
-  policy: { allowDm: true, postReply: 'auto', replyPerRun: 2, replyPerRunOthers: 2 },
-  learning: { enabled: true },
-};
 
 async function tick() {
   const stamp = new Date().toLocaleTimeString();
@@ -138,7 +128,7 @@ async function tick() {
   checkRestart();
   writeHeartbeat();
   try {
-    const result = await runDmCheck(SELF_CFG);
+    const result = await runDmCheck({});
     const rows = (result?.notes ?? []).join(' / ');
     const unread = result?.acked === undefined ? '' : `寒暄 ${result.acked} 条`;
     console.log(`[${stamp}] 巡检完成：${unread}${rows === '' ? '' : ` · ${rows}`}`);
@@ -158,7 +148,7 @@ async function tick() {
   // 评论区也归看门鲸管：别人回了她 / @ 了她，该回的就回一句（限流在 checkReply 里）。
   if (round % replyEvery === 0) {
     try {
-      const outcome = await runReplyCheck(SELF_CFG);
+      const outcome = await runReplyCheck({});
       if ((outcome?.replied ?? 0) > 0) console.log(`[${stamp}] 评论回复：回了 ${outcome.replied} 条`);
       else if ((outcome?.pending ?? 0) > 0) console.log(`[${stamp}] 评论回复：待回 ${outcome.pending} 条，这轮没到该回的时候`);
     } catch (error) {
@@ -169,7 +159,7 @@ async function tick() {
 
   if (round % studyEvery === 0) {
     try {
-      const outcome = await runStudyOnce(SELF_CFG);
+      const outcome = await runStudyOnce({});
       const studied = outcome?.studied ?? 0;
       if (studied > 0) console.log(`[${stamp}] 刷视频学习：${outcome.topic ?? ''} 学了 ${studied} 个`);
       else if (outcome?.skipped) console.log(`[${stamp}] 刷视频学习：跳过（${outcome.skipped}）`);

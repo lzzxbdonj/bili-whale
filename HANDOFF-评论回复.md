@@ -855,3 +855,30 @@ console.log(await runReplyCheck({}));
 6. **十二套测试全绿**（`test/{smoke,mention-dm,triple,reply,text,dmcmd,debug,sync,owner-free,dup-reply}` +
    `cloudflare/test/{port,patrol.mock}`）；临时探针 `_tmp-locktest.mjs`、`_tmp-holdlock.mjs` 与 `a/b/hold` 的
    out/err 已删。
+
+## 13. 宿主重启之后：插件换上新代码，闸口撤回，两边共存（2026-10-05 晚）
+
+1. **宿主重启已发生**（主人 18:16 重启 DSH）：`boot.json` 刷新为 `loadedAt 2026-10-05T10:16:59.299Z`、`pid 27048`（活着的进程），
+   仓库 `lib/*.js` 与插件目录 `C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale\lib\*.js`
+   **逐文件 MD5 一致** ⇒ 插件现在跑的就是今天这份带跨进程锁 + `replied.jsonl` 追加日志 + 并集落盘的代码。
+2. **闸口撤回**：`config.json` 改回 `policy.allowDm=true`、`policy.postReply='auto'`、`replyPerRun=2`、`replyPerRunOthers=2`、
+   `learning.enabled=true`；`tools/dm-watch.mjs` 里的 `SELF_CFG` **整块删掉**（改回 `runDmCheck({})` / `runReplyCheck({})` / `runStudyOnce({})`），
+   只留一段教训注释（宿主模块是 DSH 启动时载入的、`replyPerRun: 0` 会被 `Math.max(1, …)` 抬回 1、`boot.json` 的 `loadedAt` 才是重载信号）。
+   看门鲸重启为 **pid 30448**。
+3. **学习轮补上同一把锁**：`lib/index.js` 的 `runStudyOnce` 现在也走 `withLock('study-round', …, { waitMs: 2000 })`，
+   抢不到就写 `study.log` 的 `study 让路（pid …）`——这是最后一条没有锁的定时轮（私信 `dm-round`、回复 `replied.jsonl` 早已带锁）。
+4. **验证（`logs/auto.log`，两个写手都带 pid、交替出现、不再双发）**
+   - `10:18:00.149Z dm check … / pid 27048`（插件）与 `10:18:15.130Z dm check … / pid 30448`（看门鲸）交替；
+     看门鲸 `10:19:57.749Z reply check: 回 1 条 … / pid 30448` 正常回了一条；
+     `10:21:04.637Z dm check: 寒暄 1 条 … / pid 27048`、`actions.log 10:21:04.635Z dm-ack mid=3494364865103885 … pid=27048`。
+   - 没有再出现 81 毫秒 / 5～10 秒的双发。
+5. **云端两条替补为什么哑（主人问「电脑关了她为什么就不能说话了」）**
+   - **GitHub Actions**（`whale.yml` 每 5 分钟一轮，cookie 机密 `BILI_COOKIES` 有 5 项）：日志
+     `云端 KV 写不进去（读回来的 nonce 对不上）→ 本轮不动作，免得拿着旧账本重复回复` ⇒ 它自己主动罢工。
+   - **Cloudflare Worker**：`GET /status` 现场返回 `cookiesReady: true` 但 `loggedIn: false / canWrite: false / level: null`、
+     `lastPatrolAt 2026-10-05T04:00:12.887Z`（那轮 `replied 0 / posted 0`）⇒ 云端拿着同一份 cookie，B 站那边却不认登录。
+   - **额度**：Cloudflare KV 免费层 1000 写/天。今天 `cloudsync.log` 里 `push ok` 146 次（每次 ≈4 键）+ `config push` 153 次
+     ≈ 750 写，GH 每 5 分钟一轮巡检也要写 nonce/账本/meta —— **06:05:07Z（北京 14:05）就写爆**，我现在手动 `POST /heartbeat`
+     仍返回 `persisted: false`；云端 `meta.localSeenAt` 冻在 `04:37:32Z`。
+   - 结论：设计上「本机关机 → 云端接手」，但**替补的饭碗（KV 写额度）被 5 分钟一轮的双向同步吃光**，
+     加上 Worker 那份 cookie 不被 B 站认作登录，于是电脑一关就没人能说话。
