@@ -471,6 +471,47 @@ async function runScheduled(env) {
   });
 }
 
+// ── 场景 G：KV 写不进去（免费写额度 1000/天 见底）→ 整轮只读待命，force 也压不过 ──
+//
+// 这就是 2026-10-05 主人看到的刷屏的现场：额度写光后 putJson 静默失败，云端拿着几小时前的
+// 旧账本回评论，同一条评论被回了 6 条。规矩是「宁可少干一轮，也不能拿旧账本刷屏」。
+{
+  const deadKv = {
+    map: new Map(),
+    async get() {
+      return null;
+    },
+    async put() {
+      // 真实世界里是 KV 返回 10048 / 抛错，store.js 的 putJson 把它 catch 成 false。
+      throw new Error('KV put failed: your account has reached the free usage limit for this operation for today');
+    },
+    async delete() {},
+  };
+  const log = [];
+  const env = makeEnv(deadKv, { ...BASE_VARS, OBSERVE_ONLY: 'false' });
+  globalThis.fetch = mockFetch({ nav: navLoggedIn(3), messages: [OWNER_MESSAGE_ITEM], log });
+
+  const patrol = await (await call(env, '/patrol', { method: 'POST' })).json();
+  check('G: KV 写不进去时云端判定为待命', () => assert.equal(patrol.standby, true));
+  check('G: KV 写不进去时原因写进 notes', () => {
+    assert.ok(patrol.notes.some((note) => note.includes('KV 写不进去')), `notes=${JSON.stringify(patrol.notes)}`);
+  });
+  check('G: KV 写不进去时不回评论、不发评论、不发动态', () => {
+    assert.equal(patrol.inbox.replied, 0);
+    assert.equal(patrol.videoComments.queued, 0);
+    assert.equal(patrol.dynamic.posted, null);
+    assert.equal(postedTo(log, '/x/v2/reply/add').length, 0);
+    assert.equal(postedTo(log, '/x/dynamic/feed/create/dyn').length, 0);
+  });
+
+  const forced = await (await call(env, '/patrol?force=1', { method: 'POST' })).json();
+  check('G: 就算 ?force=1，KV 写不进去也不动手（拿旧账本刷屏更糟）', () => {
+    assert.equal(forced.standby, true);
+    assert.equal(forced.inbox.replied, 0);
+    assert.equal(postedTo(log, '/x/v2/reply/add').length, 0);
+  });
+}
+
 console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length > 0) {
   for (const line of failures) console.log(`  - ${line}`);

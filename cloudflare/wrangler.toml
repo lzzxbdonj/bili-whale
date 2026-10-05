@@ -8,27 +8,33 @@ main = "src/index.js"
 compatibility_date = "2026-01-01"
 workers_dev = true
 
-# 定时巡检：每 10 分钟一次。每日动态的时点由 DAILY_DYNAMIC_AT（默认 20:30，Asia/Shanghai）
+# 定时巡检：每 30 分钟一次。每日动态的时点由 DAILY_DYNAMIC_AT（默认 20:30，Asia/Shanghai）
 # 在巡检里判断，因此 cron 只用一条固定频率，避免 UTC 换算踩坑。
+#
+# 为什么从 10 分钟放到 30 分钟（2026-10-05）：每次巡检都要往 KV 写日志/状态，而 KV 免费额度是
+# **1000 写/天**——*/10 光这一条链就是 144 写/天，本机对账再来一轮就把额度写光；写光之后
+# putJson 静默失败，云端会拿着几小时前的旧账本重复回复同一条评论（主人看到的刷屏就是这么来的）。
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/30 * * * *"]
 
 [vars]
 # —— 身份 ——
 OWNER_NAME = "懒寻真"
 OWNER_MID = "3494364865103885"
-WHALE_NAME = "bili_83352132154"
+WHALE_NAME = "寻和橼的大肥鱼dsh"
 WHALE_MID = "3747560556595480"
 TIMEZONE = "Asia/Shanghai"
 
 # —— 策略（与插件端同一套语义；云端强约束，模型绕不过）——
+# ⚠ 这里的 [vars] 会**盖住** `src/policy.js` 的代码默认值（varsConfig → deepMerge），
+#   改默认值时两处要一起改，否则云端还在按老数字办事（今天就是这么踩的）。
 POST_VIDEO_COMMENT = "confirm"
 POST_REPLY = "auto"
 POST_DYNAMIC = "auto"
-DAILY_VIDEO_COMMENTS = "3"
-DAILY_REPLIES = "10"
+DAILY_VIDEO_COMMENTS = "5"
+DAILY_REPLIES = "5"
 DAILY_DYNAMICS = "1"
-MIN_INTERVAL_SECONDS = "120"
+MIN_INTERVAL_SECONDS = "60"
 MIN_INTERVAL_SECONDS_OWNER = "15"
 MAX_COMMENT_CHARS = "200"
 REPLY_PER_USER_PER_THREAD = "1"

@@ -34,7 +34,7 @@ import {
   threadReplyCount,
 } from './ledger.js';
 import { draftDynamic, draftReply, draftVideoComment } from './persona.js';
-import { appendCloudLog, loadState, saveCookies, saveLedger, saveMeta, savePending } from './store.js';
+import { appendCloudLog, getJson, loadState, putJson, saveCookies, saveLedger, saveMeta, savePending } from './store.js';
 
 /** 待确认队列上限（超出丢最旧的）。 */
 export const MAX_PENDING = 20;
@@ -48,6 +48,25 @@ export const MAX_PENDING = 20;
  * `LOCAL_TTL_MS`（15 分钟）同口径；`force=true`（`POST /patrol?force=1`）可强制跑。
  */
 const LOCAL_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * 云端 KV 今天还写不写得进去？（写一个 nonce 再读回来）
+ *
+ * 主人 2026-10-05 亲眼看到的刷屏就是这么来的：Cloudflare KV 免费额度 **1000 写/天** 写光之后
+ * `kv.put` 静默失败（`store.js` 的 `putJson` 是 `try/catch → false`），而巡检照样拿着**几小时前的
+ * 旧账本**去回消息中心 —— 旧账本认不出「这条评论已经回过」，同一条评论被回了 6 条一模一样的
+ * 「人家记住啦」。所以：写不进去就**整轮只读待命**，一个写动作都不做。
+ */
+async function kvWritable(env) {
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const wrote = await putJson(env?.WHALE_KV, 'state:probe', { nonce, at: new Date().toISOString() });
+    const back = await getJson(env?.WHALE_KV, 'state:probe', null);
+    return wrote === true && back?.nonce === nonce;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 主人时区相对 UTC 的偏移（毫秒）。
@@ -224,9 +243,15 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
   // ── 1.5 本机在岗就只待命（主人 2026-10-05：别一条评论两端都回） ──────────────
   const localSeenAt = Number(state.meta?.localSeenAt ?? 0);
   const localFresh = localSeenAt > 0 && startedAt - localSeenAt < LOCAL_TTL_MS;
-  const standby = localFresh && force !== true;
+  // KV 写不进去（免费额度见底）时也当「待命」：账本落不了盘，动手就会重复回复。
+  // 注意这条闸门 force 也压不过 —— 拿旧账本刷屏比少干一轮严重得多。
+  const storeOk = await kvWritable(env);
+  if (storeOk !== true) {
+    summary.notes.push('云端 KV 写不进去（免费写额度 1000/天 见底？）：这一轮只读待命，不回评论、不发评论、不发动态 —— 否则账本落不了盘，同一条评论会被重复回。');
+  }
+  const standby = (localFresh && force !== true) || storeOk !== true;
   summary.standby = standby;
-  if (standby) {
+  if (localFresh && force !== true) {
     const minutes = Math.max(0, Math.round((startedAt - localSeenAt) / 60000));
     summary.notes.push(`本机在岗（心跳 ${minutes} 分钟前）：云端这一轮只待命，回评论 / 评论视频 / 发动态全跳过。要强制跑就 POST /patrol?force=1。`);
   }
@@ -544,7 +569,8 @@ export async function runPatrol(env, { trigger = 'cron', ctx, state: providedSta
     summary.errors.push(`落盘：${String(issue?.message ?? issue)}`);
   }
 
-  const line = `patrol(${trigger}) 登录=${summary.loggedIn} 等级=${summary.level ?? '?'} 可写=${canWrite} 待命=${standby ? '是（本机在岗）' : '否'} 回复=${summary.inbox.replied} 待回=${summary.inbox.deferred} 评论草稿=${summary.videoComments.queued} 评论发出=${summary.videoComments.posted} 动态=${summary.dynamic.posted === null ? '未发' : '已发'}${summary.errors.length > 0 ? ` 错误=${summary.errors.length}` : ''}`;
+  const standbyWhy = storeOk !== true ? '是（云端 KV 写不进去）' : (standby ? '是（本机在岗）' : '否');
+  const line = `patrol(${trigger}) 登录=${summary.loggedIn} 等级=${summary.level ?? '?'} 可写=${canWrite} 待命=${standbyWhy} 回复=${summary.inbox.replied} 待回=${summary.inbox.deferred} 评论草稿=${summary.videoComments.queued} 评论发出=${summary.videoComments.posted} 动态=${summary.dynamic.posted === null ? '未发' : '已发'}${summary.errors.length > 0 ? ` 错误=${summary.errors.length}` : ''}`;
   try {
     await appendCloudLog(env, line);
   } catch {
