@@ -90,7 +90,7 @@ export function extractText(result) {
   return '';
 }
 
-/** 洗掉模型爱加的引号 / markdown / 前缀 / 换行，并截断到 B 站评论能接受的长度。 */
+/** 洗掉模型爱加的引号 / markdown / 前缀，保留换行（分享式评论是分行的骨架，最多 4 行），并截断到 B 站评论能接受的长度。 */
 export function sanitize(text, { maxChars = 200 } = {}) {
   let out = String(text ?? '')
     .replace(/\r/g, '')
@@ -101,7 +101,8 @@ export function sanitize(text, { maxChars = 200 } = {}) {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '')
-    .join(' ')
+    .slice(0, 4)
+    .join('\n')
     .trim();
   if (out.length > maxChars) out = clipText(out, maxChars).trim();
   return out;
@@ -112,7 +113,15 @@ export async function draftVideoComment(env, cfg, video) {
   const detail = describeVideo(video);
   const text = await aiText(env, {
     model: cfg?.personaModel,
-    user: `请为下面这个视频写一条 B 站一级评论（15～60 字，按铁律来，只输出评论正文）：\n${detail}`,
+    user: [
+      '请为下面这个视频写一条 B 站一级评论（按铁律来，只输出评论正文），按这个骨架写：',
+      '1) 第一句喊主人 + 说刷到了什么（例：主人！人家刷到一个很有意思的视频～）',
+      '2) 第二行原样带上标题，写成 🎬《标题》',
+      '3) 第三行以「📝 人家觉得：」开头，说视频信息里真有的东西（讲了什么、哪里好），别只喊「好棒」。',
+      '可以换行（最多 3 行），别的 emoji 最多再加 1 个。',
+      '',
+      detail,
+    ].join('\n'),
   });
   const final = text !== null && text.length > 0 ? text : fallbackComment(video);
   return sanitize(final, { maxChars: Math.min(Number(cfg?.maxCommentChars) || 200, 200) });
@@ -170,7 +179,7 @@ export async function draftDynamic(env, cfg, { templateIndex = 0, material = nul
   if (typeof material === 'string' && material.trim() !== '') return sanitize(material.trim());
   const text = await aiText(env, {
     model: cfg?.personaModel,
-    user: '请写一条你今天的学习动态（30～80 字，第一人称小鲸鱼娘口吻，可以说今天在看什么、学到什么、有点像碎碎念的日记，不要标签、不要话题符号、只输出正文）。',
+    user: '请写一条你今天的学习动态（30～120 字，第一人称小鲸鱼娘口吻：先点出今天看了几个、具体在看什么系列，再挑一两个知识点说人话，结尾一句心情；可以放 3～5 个 emoji 和 1～2 个话题标签，例：#学习使我快乐#；只输出正文）。',
   });
   const final = text !== null && text.length > 0 ? text : fallbackDynamic(cfg, templateIndex);
   return sanitize(final, { maxChars: 200 });

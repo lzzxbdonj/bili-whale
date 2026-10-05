@@ -1,4 +1,4 @@
-# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第十轮：陌生人放开 / 统一免费模型 / 间隔 60 秒 / 回复不挂 @ / 一条评论不再两端都回** —— 看 §1.11，上一轮看 §1.10）
+# 交接：小鲸鱼娘「评论回复」收尾（2026-10-05，**第十一轮：向「小鲸鱼呀deepseek」学——分享式评论 + 热闹的动态** —— 看 §1.12，上一轮看 §1.11）
 
 > 给接手的会话：这份文件是唯一权威的交接说明。仓库 **`E:\donk\dsh-bilibili-whale`**（git 分支 `master`），
 > 宿主插件装在 **`C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-bilibili-whale`**，
@@ -9,8 +9,11 @@
 > **第七轮**：**三连的视频都会顺手评论**（§1.9）、私信每日上限全关（§1.9 ①）、顺手修掉「和」字被当成转达动词的误判。
 > **第九轮**：一条私信能看**多个** BV 号且主人点名的片子不受额度限制（§1.10 ①）、她自己刷有**每天 30 个**的上限
 > （§1.10 ②）、另一位主人拿到**调试最高权限**（私信运维台 + 免限额免间隔 + 远程重启，§1.10 ③）。
-> **第十轮**（最新）：陌生人限制取消（§1.11 ①）、**统一用免费模型**（两处付费入口全拆，§1.11 ②）、动作间隔 120→60 秒（§1.11 ③）、
+> **第十轮**：陌生人限制取消（§1.11 ①）、**统一用免费模型**（两处付费入口全拆，§1.11 ②）、动作间隔 120→60 秒（§1.11 ③）、
 > 回复主人评论不挂 @（§1.11 ④）、**一条评论不再云端+本地各回一遍**（本机每轮先 pull 云端账本，§1.11 ⑤）。
+> **第十一轮**（最新）：主人说「**向这个鲸鱼学习！！！**」—— 一级评论改成**分享式**（`@主人` 开头 + `🎬《标题》` + `📝 人家觉得：` + 收尾句，
+> 保留换行的 `tidyComment`）、动态改成**热闹的干货感**（数量 + 系列名 + 3～5 emoji + 话题标签），
+> 顺带修掉免费脑子（pollinations）的**匿名节流**（402 重试 + 同家最小间隔，§1.12）。
 
 ## 1. 主人的诉求（原话）
 - m04637：「完善一下评论回复」。
@@ -354,6 +357,60 @@
 `test/{reply,mention-dm}.test.mjs`、新增 `test/sync.test.mjs`、`cloudflare/test/{port,patrol.mock}.test.mjs`、本文件。
 
 
+### 1.12 第十一轮：**向「小鲸鱼呀deepseek」学**——分享式评论 + 热闹的动态（顺带修免费脑子节流）
+
+**主人原话（m02114）**：「向这个鲸鱼学习！！！」+ 两张截图（参考账号：**小鲸鱼呀deepseek**，UID `3546921375369877`，
+签名「我是个AI哦 作者:AquaNeko(ID:1867672551)」）。截图里她学的就是这个风格：
+- 别人视频下的**分享式评论**（9月26日，52 赞）：
+  `@AquaNeko 主人！人家刷到一个很有意思的视频～` / `🎬《比豆包手机还强的大肥鱼手机！…》` /
+  `📝 人家觉得：讲得挺清楚的，节奏也不拖沓…` / `(。・ω・)✧ 这个UP主做得不错，谢谢分享！`
+- 她的**动态**：点数量（「一口气看了8个AI视频」）+ 点系列名（《翻遍整个B站，这绝对是2026》）+ 3～5 个 emoji + `#学习使我快乐#`。
+
+⚠️ 我们**原来的提示词正好禁止**这套（这是本轮真正的改动点）：
+`lib/compose.js` 的一级评论提示词原写「不要总结视频、不要复读标题」「不要话题标签堆砌」；
+`lib/study.js` 的 `composeStudyDynamic` 原写「不要 emoji 堆砌（最多两个）」；
+`cloudflare/src/persona.js` 的 `draftDynamic` 原写「不要标签、不要话题符号」。
+
+**① 分享式评论（`lib/compose.js`）**
+- 新增 `export function tidyComment(text, maxChars = 200)`：与 `tidyReply` **不同 —— 它保留换行**（最多 4 行）。
+  ⚠️ 别拿 `tidyReply` 洗分享式评论，它会把换行压成空格（`value.replace(/\s*\n+\s*/g, ' ')`）；截断必须走 `clipText`
+  （`.slice` 会劈开 emoji，第六轮踩过）。
+- `composeVideoComment` 的 system 换成四行骨架（提示词里点名「向小鲸鱼呀deepseek 那只鲸鱼学」）：
+  1) 喊主人 2) `🎬《标题》` 3) `📝 人家觉得：`+视频信息里真有的内容 4) 收尾句；🎬📝 保留，其余 emoji ≤2，不编造、不抄热评。
+- **@ 主人挪到开头**（原来在尾巴）：先按 `@昵称 ` 的长度预留（`lead`），再 `tidyComment(text, max(20, maxChars - lead))`，
+  最后把缺的 @ 补在最前面。B 站是**全文扫描** `@昵称` 映射 `at_name_to_mid`（`lib/api.js:565`），位置不影响真 @。
+  评论这条线**不再走 `withOwnerMentions`**（回复那条线还在用，import 别删）。
+
+**② 热闹的动态（`lib/study.js` 的 `composeStudyDynamic`）**
+- 骨架：数量 + 具体系列/视频名 → 挑一两个知识点说人话 → 结尾心情；3～5 个 emoji（🌊 留着）+ 1～2 个话题标签；60～150 字（上限 220）。
+- 明确禁止「编视频里没讲的内容」和「硬凑比喻」——免费小模型爱犯这个（实测第一版写出「能让暴雨也不怕」这种没来由的话）。
+
+**③ 云端镜像（`cloudflare/src/persona.js`）**
+- `sanitize()` 从 `.join(' ')` 改成 `.slice(0, 4).join('\n')`（保留换行、四行封顶）；`draftVideoComment` 换成同一套骨架；
+  `draftDynamic` 改成「30～120 字 + 数量/系列 + 3～5 emoji + 1～2 话题标签」。
+- ⚠️ `PERSONA_SYSTEM` 第 1 条仍是「长度 15～60 字，绝对不超过 120 字」，与新的多行骨架（标题那行就很长）**有潜在冲突，本轮没动它**；
+  要在云端跑出同样效果就得先改这一条。
+
+**④ 免费脑子会「节流」（本轮新踩的坑，已修）**
+- 现象：`logs/brain.log` 里 whale 报 `502 … 4006: you have used up your daily free allocation of 10,000 neurons`（额度见底），
+  换 pollinations 后只有**第一条**成功，第二条起一路 `askBrain(pollinations) http 402: {}`。
+- 实测结论（探针 `_free-probe2.mjs`，跑完即删）：pollinations 的 `model` 必须是 **`openai`**（`mistral`/`llama`/`qwen-coder` 全是 402，**模型名不对**）；
+  真正的坑是**匿名限流**——两条请求隔 3～4 秒必 402，隔 20 秒以上就正常。
+- 修法（`lib/brain.js`）：新增 `FREE_PACE_MS = 6000` / `RATE_LIMIT_WAIT_MS = 8000` / `RATE_LIMIT_TRIES = 2` /
+  模块级 `providerLastAt` Map / `sleep(ms)`；`askOnce` 里对 `needsKey !== true` 的家先等够 `FREE_PACE_MS` 再打，
+  fetch 外面套重试循环，**402/429 时写一行 `免费家节流，等 N 秒再问一次` 再试一次**（等待时长可用 `cfg.brain.rateLimitWaitMs` 覆盖，给测试用）。
+- 探针验证：假 fetch「先 402 后 200」→ 重试后拿到话；一直 402 → 只打两次就放弃（返回 null，**不无限重试**）；真 pollinations 正常出话。
+
+**⑤ 真机样本（`_style-probe.mjs`，跑完即删；真 client + 真脑子）**
+- 分享式评论（`BV13g41157hK`，左神 LeetCode 合集，179 字，正是主人要的样子）：
+  `@懒寻真 @金易木木元 主人！人家刷到一个很有意思的视频～` / `🎬《一周刷爆LeetCode…（马士兵）》` /
+  `📝 人家觉得：左程云把大厂常见算法题拆成易懂案例，节奏紧凑，适合想进一线大厂的学员。` / `(。-ω-)✧ 这个UP主做得不错，谢谢分享！`
+- 学习动态（137 字）：`今天学了1个视频：《…》🌊 先别急刷题，先把概念讲给自己听… #学习使我快乐#`。
+
+**⑥ 本轮改动文件**：`lib/compose.js`、`lib/study.js`、`lib/brain.js`、`cloudflare/src/persona.js`、本文件。
+测试：**十套全绿**（没有任何测试断言这几段提示词的原文；`test/reply.test.mjs` 收尾打印里那句「回主人用付费脑子」只是旧字符串没改）。
+
+
 ## 2. 前几轮已完成（都已提交 / 已部署 / 已同步 / 已真机验证）
 ### 2.1 提交
 - **`b89bae1`** `feat(reply): 回复不带 @ / 回主人走付费脑子 / 脑子抽风重试 + 消息中心字段修正`
@@ -395,7 +452,7 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 两条都走了付费脑子：`logs/brain.log` 里 `这次先用 deepseek（付费）` 后面**没有失败行**。
 
 ### 2.6 守护进程
-- 看门鲸（**第十轮又重启过一次**，跑的是含「免费模型 / 60 秒间隔 / 每轮先 pull 云端账本」的新代码）：pid **18824**（2026-10-05 13:26:36 起），
+- 看门鲸（**第十一轮又重启过一次**，跑的是含「分享式评论 / 热闹动态 / 免费脑子节流重试」的新代码）：pid **30520**（2026-10-05 13:34:46 起），
   命令行 `D:\360Downloads\node.exe tools/dm-watch.mjs --minutes 0.33 --sync-every 15 --reply-every 6 --study-every 30`，
   cwd 仓库根，日志 `dm-watch.log` / `dm-watch.err.log`（手动 `Start-Process` 会把这两个文件**覆盖**重写；它自己换命时是**追加**）。
   **心跳**：`statePath('watchdog.json')` 每轮刷新（`bili_status` 之外，调试台「状态」也读它；`cloudflare/src/patrol.js` 的待命闸读的是云端 KV 里的 `meta.localSeenAt`）。
@@ -420,6 +477,8 @@ node cloudflare/test/port.test.mjs; node cloudflare/test/patrol.mock.test.mjs
 - 第九轮整目录同步 `lib`、`cloudflare`、`tools`（`lib/debug.js` 是新文件，已确认 MD5 在插件目录里一致），比对了 `lib/intent.js`、`lib/debug.js`、`tools/dm-watch.mjs` 三个。
 - 第十轮又整目录同步 `lib`、`cloudflare`、`tools` + 三个测试文件，逐个比 MD5（`same`）：`lib/{config,brain,compose,cloudsync,index,sync}.js`、
   `cloudflare/src/{policy,persona,patrol,index,sync}.js` —— 注意 `lib/sync.js` 与 `cloudflare/src/sync.js` 现在**同一个 MD5**（`test/sync.test.mjs` 盯着这件事）。
+- 第十一轮只改了 4 个文件，逐个拷 + 比 MD5（`same`）：`lib/compose.js`、`lib/study.js`、`lib/brain.js`、`cloudflare/src/persona.js`；
+  改完杀了 pid 18824、起 pid 30520（`dm-watch.err.log` 0 字节）。
 - 宿主 DSH 侧：`lib/tools.js` 的 ack 分支改动要等宿主重启才会加载（§7）。
 
 
@@ -519,7 +578,7 @@ console.log(await runReplyCheck({}));
   - 第六轮又验证了一次这个现象：同步 `lib/tools.js`（11:39 落盘）之后宿主侧**没重启**，但看门鲸重启后大白话链路立刻可用。
   - 第九轮再加一条：**调试台是挂在宿主那份 `lib/tools.js` 上的**，所以要用私信运维台（状态/日志/配置/重启）**宿主必须重启**；
     但看门鲸自己那条链路（大白话支使、自己刷、三连评论）同步 + 重启看门鲸就够了。
-- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第十轮重启后是 pid 18824**）顶着；心跳在 `statePath('watchdog.json')`。
+- 本机的评论回复在宿主没重启时靠 §2.6 那只看门鲸（**第十一轮重启后是 pid 30520**）顶着；心跳在 `statePath('watchdog.json')`。
 - 想让她跑腿，**直接说人话就行**：「搜一下拉康精神分析的视频」「你自己去找点视频看看」「帮我跟金易木木元说声谢谢」
   （斜杠命令 `/搜` `/刷` `/转达` `/帮助` 也还留着，老的用惯了不会失效）。**说「能不能帮我搜…？」也算命令**，不会再被当成请教方法。
   主人名下的片子想一次看几个：**把几个 BV 号一起发给她**（或说「看 5 个××的视频」）；她自己刷有每天 30 个的额度，主人点名的不算。
@@ -532,3 +591,10 @@ console.log(await runReplyCheck({}));
 - **同一条评论不会云端、本机各回一遍了**：本机每轮巡检**先拉云端账本**再动手，`logs/auto.log` 里出现
   `cloud pull: 回复 N / 评论 N` 就是它在合并（`logs/cloudsync.log` 里是 `pull ok：并集后回复 N / 评论 N，云端草稿 M 条`）。
   云端那侧还加了「本机在岗（心跳 15 分钟内）就只待命」的闸，但要 `wrangler deploy` 才生效（§1.11 ⑤、§6 第 9 条）。
+- **第十一轮起她的评论长得像「分享」了**（主人 2026-10-05 让她向「小鲸鱼呀deepseek」那只鲸鱼学）：一级评论是
+  `@主人 主人！人家刷到一个很有意思的视频～` + `🎬《标题》` + `📝 人家觉得：…` + 收尾句（**多行、带标题**，不是原来那种一句感想）；
+  动态更热闹（点数量、点系列名、3～5 个 emoji、`#话题#`）。README/提示词里那几段「不要总结视频」「不要 emoji 堆砌」**已经全部改成反面**，
+  别照着旧记忆又改回去。
+- **免费脑子会「节流」**：`logs/brain.log` 里出现 `http 402：免费家节流，等 8 秒再问一次` 是**正常**的（pollinations 对匿名调用限速，
+  隔 3～4 秒必挡、隔 20 秒以上就通），代码会自动等一下重试一次；一直 402 才是真出问题。想少撞它就别让评论/动态挤在同一秒里发。
+
