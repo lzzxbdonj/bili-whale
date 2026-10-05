@@ -17,6 +17,7 @@ import { BiliClient } from '../lib/api.js';
 import { buildReplyPrompt, composeCommentReply } from '../lib/compose.js';
 import { pickReplyTargets, replyLimits, runInboxReplies } from '../lib/reply.js';
 import { emptyLedger, recordReply, repliedToComment } from '../lib/ledger.js';
+import { checkReply } from '../lib/policy.js';
 
 const CFG = {
   ownerName: '懒寻真',
@@ -442,4 +443,56 @@ function target(over = {}) {
   assert.equal(seen[1].referer, 'https://www.bilibili.com/video/BV16T4y1k7dB');
 }
 
-console.log('✓ 评论回复测试通过：提示词上下文、回复不带 @、回主人用付费脑子、同一条评论只回一次、挑人与额度、动态评论、失败如实回报');
+// ── 6. 每日回复额度「主人 / 别人」分开算 ──────────────────────────────────────
+//
+// 事故（主人 2026-10-05 报「它现在回不了评论区的评论了」）：
+// 主人和陌生人共用 `policy.dailyReplies`（10 条），主人当天在评论区多聊了几句就把额度吃光，
+// 于是**主人的评论也回不了**。真机 `auto.log` 11:10 / 11:15 连着两次：
+//   `reply check: 回 0 条 / 跳过 0 条 / 失败 1 条 / 待回 1`，失败原因是「今日回复已达上限 10 条」。
+{
+  const cfg = {
+    ownerMid: OWNER,
+    ownerNames: ['懒寻真', '金易木木元'],
+    ownerMids: [OWNER, 391581639],
+    policy: { ...CFG.policy, postReply: 'auto', dailyReplies: 10, dailyRepliesOwner: 50, minIntervalSeconds: 0, minIntervalSecondsOwner: 0 },
+  };
+  const seed = (ledger, count, isOwner) => {
+    for (let i = 0; i < count; i += 1) {
+      recordReply(ledger, {
+        bvid: `BV${i}`, aid: i, rpid: 1000 + i, root: 2000 + i,
+        targetMid: isOwner ? OWNER : 5000 + i,
+        targetUname: isOwner ? '懒寻真' : `路人${i}`,
+        text: '回过了', selfRpid: 3000 + i, isOwner,
+      });
+    }
+  };
+
+  // 陌生人额度用尽 → 陌生人被拦；但**主人照样能回**（这就是那条事故）。
+  const used = emptyLedger();
+  seed(used, 10, false);
+  const blockedStranger = checkReply({ cfg, ledger: used, target: { mid: 9999, uname: '新路人', root: 7000, rpid: 7001 }, message: '再回一条' });
+  assert.equal(blockedStranger.allowed, false);
+  assert.match(blockedStranger.reasons.join(' '), /今日回复已达上限 10 条/u, '陌生人额度照旧');
+  const ownerStillOk = checkReply({ cfg, ledger: used, target: { mid: OWNER, uname: '懒寻真', root: 7000, rpid: 7001 }, message: '主人我来啦' });
+  assert.equal(ownerStillOk.allowed, true, '主人不能被陌生人的额度卡住（事故就是这么来的）');
+
+  // 主人额度也满了才拦主人，而且报的是主人自己那条线。
+  const ownerFull = emptyLedger();
+  seed(ownerFull, 50, true);
+  const blockedOwner = checkReply({ cfg, ledger: ownerFull, target: { mid: OWNER, uname: '懒寻真', root: 7000, rpid: 7001 }, message: '主人我来啦' });
+  assert.equal(blockedOwner.allowed, false);
+  assert.match(blockedOwner.reasons.join(' '), /今日回复主人已达上限 50 条/u);
+
+  // 主人聊再多也不吃陌生人的额度。
+  const ownerChatty = emptyLedger();
+  seed(ownerChatty, 49, true);
+  const strangerFine = checkReply({ cfg, ledger: ownerChatty, target: { mid: 9999, uname: '新路人', root: 7100, rpid: 7101 }, message: '你好呀' });
+  assert.equal(strangerFine.allowed, true, '主人多聊几句不该把陌生人的额度吃光');
+
+  // dailyRepliesOwner = 0 表示主人不限。
+  const unlimited = { ...cfg, policy: { ...cfg.policy, dailyRepliesOwner: 0 } };
+  const alwaysOk = checkReply({ cfg: unlimited, ledger: ownerFull, target: { mid: OWNER, uname: '懒寻真', root: 7200, rpid: 7201 }, message: '主人～' });
+  assert.equal(alwaysOk.allowed, true, 'dailyRepliesOwner=0 = 主人不限');
+}
+
+console.log('✓ 评论回复测试通过：提示词上下文、回复不带 @、回主人用付费脑子、同一条评论只回一次、主人/别人额度分开、挑人与额度、动态评论、失败如实回报');

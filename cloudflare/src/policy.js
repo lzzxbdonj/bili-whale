@@ -16,7 +16,7 @@
  *
  * @module dsh-bilibili-whale/cloudflare/policy
  */
-import { commentedVideo, dynamicPostedToday, lastReplyTsForUser, threadReplyCount, todayCounts, tripledAlready, tripleCountToday } from './ledger.js';
+import { commentedVideo, dateKey, dynamicPostedToday, lastReplyTsForUser, threadReplyCount, todayCounts, tripledAlready, tripleCountToday } from './ledger.js';
 
 /** 默认配置（从 lib/config.js 原样搬过来；Worker 版不移植其中的文件路径/读写部分）。 */
 export const DEFAULTS = {
@@ -60,6 +60,14 @@ export const DEFAULTS = {
     /** 每日上限。 */
     dailyVideoComments: 3,
     dailyReplies: 10,
+    /**
+     * 回**主人**的每日上限（单独算，跟上面的 `dailyReplies` 不共用）。
+     *
+     * 主人 2026-10-05：「我有评论她能回，别人的评论调用免费模型回」。
+     * 原来两者共用一个 `dailyReplies`，主人在评论区多聊几句就把额度吃光，
+     * 结果她**连主人的评论都回不了**。主人优先是这只鲸鱼的铁律，所以给主人一条高得多的独立线；设 0 = 不限。
+     */
+    dailyRepliesOwner: 50,
     dailyDynamics: 1,
     /** 每天最多收藏几个「刷到觉得好看」的视频。 */
     dailyFavorites: 5,
@@ -339,6 +347,23 @@ function intervalOk(cfg, ledger, now, isOwner) {
   return { ok: true };
 }
 
+/**
+ * 今天回过几条（可按「是不是回主人」分开数）。
+ *
+ * 为什么不用 `todayCounts().replies`：那是个**不分人**的总数（`daily[key].replies`），
+ * 拿它当上限会让「主人在评论区多聊几句」直接把陌生人的额度吃光。
+ * `recordReply` 存了 `isOwner`，所以从 `ledger.replies` 现算更准。
+ *
+ * @param {boolean} wantOwner - true 只数回主人的，false 只数回别人的。
+ */
+function replyCountToday(ledger, now, wantOwner) {
+  const key = dateKey(new Date(now));
+  return (ledger.replies ?? []).filter((row) => {
+    if ((row?.isOwner === true) !== wantOwner) return false;
+    return dateKey(new Date(Number(row?.ts) || 0)) === key;
+  }).length;
+}
+
 /** 主人判定：昵称或 UID 命中。 */
 export function isOwner(mid, cfg) {
   // 指定签名是 isOwner(mid, cfg)；为了不丢源文件 isOwner(cfg, { mid, uname }) 的昵称判定，
@@ -473,8 +498,21 @@ export function checkReply({ cfg, ledger, bvid, root, rpid, message, toMid, toNa
     warnings.push('主人优先：跳过「每人一条」限制');
   }
 
-  if (counts.replies >= Number(cfg.policy.dailyReplies)) {
-    reasons.push(`今日回复已达上限 ${cfg.policy.dailyReplies} 条`);
+  // 每日上限**分开算**（主人 2026-10-05：「我有评论她能回，别人的评论调用免费模型回」）。
+  // 原来主人和陌生人共用 `dailyReplies`，主人一多聊几句就把额度用光，
+  // 表现就是「她回不了评论区的评论了」。
+  if (owner) {
+    const capOwner = Number(cfg.policy.dailyRepliesOwner ?? 50) || 0;
+    const usedOwner = replyCountToday(ledger, now, true);
+    if (capOwner > 0 && usedOwner >= capOwner) {
+      reasons.push(`今日回复主人已达上限 ${capOwner} 条`);
+    }
+  } else {
+    const cap = Number(cfg.policy.dailyReplies) || 0;
+    const used = replyCountToday(ledger, now, false);
+    if (cap > 0 && used >= cap) {
+      reasons.push(`今日回复已达上限 ${cap} 条`);
+    }
   }
   const interval = intervalOk(cfg, ledger, now, owner);
   if (!interval.ok) reasons.push(interval.reason);
