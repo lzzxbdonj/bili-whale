@@ -40,6 +40,32 @@ import { safeForModel } from './text.js';
 const LOCAL_TTL_MS = 15 * 60 * 1000;
 
 /**
+ * 省 KV 写额度：`meta` 里的 `at` / `localSeenAt` 每一轮都变，但它们唯一的用处是
+ * 「证明本机还在岗」（判断在岗的 TTL 是 15 分钟）。所以只要存着的那份心跳还在
+ * 这个窗口里（10 分钟，留 5 分钟余量），就算别的字段没变，也不必再写一次。
+ *
+ * 为什么在乎：Cloudflare 免费 KV 是 **1000 写/天**，本机对账定时器每 5 分钟一轮、
+ * 云端 cron 每轮都要写，2026-10-05 中午就把额度写光 —— 写光之后 `putJson` 静默失败，
+ * 云端拿着几小时前的旧账本重复回复同一条评论（见 HANDOFF §7 最后一条）。
+ */
+const META_SKIP_MS = 10 * 60 * 1000;
+
+/** 去掉「每轮都会变、且只当时效标记用」的字段，用来判断 meta 是不是真的变了。 */
+function metaStable(meta) {
+  if (meta === null || typeof meta !== 'object') return meta ?? null;
+  const copy = { ...meta };
+  delete copy.at;
+  delete copy.localSeenAt;
+  if (copy.runner !== null && typeof copy.runner === 'object') copy.runner = { ...copy.runner, at: '' };
+  return copy;
+}
+
+/** 两个值（对象/数组/标量）序列化后是否一模一样 —— 省额度用。 */
+function sameValue(a, b) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+/**
  * 让「手脚」去干活：用 GitHub API 触发 Actions 里的 whale workflow。
  *
  * Worker 自己发不出去（Cloudflare 出口 IP 被 B 站 -412 拦死），所以它只负责
@@ -419,14 +445,25 @@ export default {
           // 而 store.js 的 putJson 是「吞掉异常返回 false」——不检查的话，
           // 客户端会以为「交账本成功」，实际云端还停在几小时前的旧快照上
           // （2026-10-05 的翻车：云端拿旧账本，同一条评论被重复回复）。
+          //
+          // ⚠ 省额度第二刀：**内容没变就不写**。本机的对账定时器每 5 分钟来一次，
+          // 账本/草稿绝大多数轮次跟云端存的一模一样，以前每轮 4 次 put（账本+草稿+meta+cookie）
+          // ⇒ 一天上千次；现在只写真变了的那些，`skipped` 报出来给日志看。
           const writes = [];
-          writes.push(await saveLedger(env, nextLedger));
-          writes.push(await savePending(env, nextPending));
-          writes.push(await saveMeta(env, nextMeta));
+          const skipped = [];
+          if (sameValue(nextLedger, state.ledger)) skipped.push('ledger');
+          else writes.push(await saveLedger(env, nextLedger));
+          if (sameValue(nextPending, state.pending)) skipped.push('pending');
+          else writes.push(await savePending(env, nextPending));
+          const beatFresh = Number(state.meta?.localSeenAt ?? 0) > 0
+            && Date.now() - Number(state.meta.localSeenAt) < META_SKIP_MS;
+          if (sameValue(metaStable(nextMeta), metaStable(state.meta)) && beatFresh === true) skipped.push('meta');
+          else writes.push(await saveMeta(env, nextMeta));
           let cookieKeys = Object.keys(state.cookies ?? {});
           if (body.cookies !== undefined && body.cookies !== null && Object.keys(body.cookies).length > 0) {
             const merged = mergeCookies(state.cookies, body.cookies);
-            writes.push(await saveCookies(env, merged));
+            if (sameValue(merged, state.cookies)) skipped.push('cookies');
+            else writes.push(await saveCookies(env, merged));
             cookieKeys = Object.keys(merged);
           }
           const persisted = writes.every((flag) => flag === true);
@@ -435,6 +472,8 @@ export default {
           return json({
             ok: true,
             persisted,
+            skipped,
+            wrote: writes.length,
             warning: persisted === true ? '' : 'KV 写不进去（免费写额度见底？）：这份状态没有落盘',
             mergedAt: new Date().toISOString(),
             ledger: {
@@ -518,11 +557,18 @@ export default {
           if (body === null) return fail('请求体必须是 JSON 对象');
           const overrides = await varsConfigOverride(env);
           const next = deepMerge(overrides, body);
-          const persisted = await saveUserConfig(env, next);
-          await appendCloudLog(env, `config updated: ${JSON.stringify(body)}`);
+          // 省额度第三刀：本机每轮对账都会推一次同样的配置，内容没变就别写、也别记日志
+          // （appendCloudLog 也是一次 put）。
+          const unchanged = sameValue(next, overrides);
+          let persisted = true;
+          if (unchanged !== true) {
+            persisted = await saveUserConfig(env, next);
+            await appendCloudLog(env, `config updated: ${JSON.stringify(body)}`);
+          }
           return json({
             ok: true,
             persisted,
+            unchanged,
             warning: persisted === true ? '' : 'KV 写不进去（免费写额度见底？）：配置没有落盘',
             config: deepMerge(deepMerge(DEFAULTS, varsConfig(env)), next),
           });
